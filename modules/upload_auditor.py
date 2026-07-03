@@ -204,7 +204,7 @@ class UploadIdentifierModule(BaseModule):
 
         import urllib.parse
         from web_audit.modules.sqli_detector import AJAX_INFER_PROMPT, AJAXActionInferResult
-        from prd.web_audit.core.llm_factory_test import get_llm
+        from web_audit.core.llm_factory import get_llm
         llm = get_llm()
         ajax_chain = AJAX_INFER_PROMPT | llm.with_structured_output(AJAXActionInferResult)
 

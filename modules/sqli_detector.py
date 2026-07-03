@@ -222,7 +222,7 @@ class SQLiDetectorModule(BaseModule):
 
     def __init__(self, requester: Requester):
         super().__init__(requester)
-        from prd.web_audit.core.llm_factory_test import get_structured_llm
+        from web_audit.core.llm_factory import get_structured_llm
         self._chain = AUTH_BYPASS_PROMPT | get_structured_llm(AuthBypassResult)
         self._payload_chain = PAYLOAD_GENERATION_PROMPT | get_structured_llm(PayloadGenerationResult)
         self._ajax_infer_chain = AJAX_INFER_PROMPT | get_structured_llm(AJAXActionInferResult)
