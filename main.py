@@ -173,6 +173,13 @@ def main():
         required=False,
     )
     parser.add_argument(
+        "-t", "--threads",
+        type=int,
+        default=5,
+        help="批量扫描时的并发线程数 (默认: 5)",
+        required=False,
+    )
+    parser.add_argument(
         "--step",
         type=str,
         choices=["all", "login", "sqli", "upload_id", "upload_audit", "upload_exploit"],
@@ -202,17 +209,23 @@ def main():
         print("错误：请通过 --url、-f/--file 参数或 AUDIT_TARGET_URL 环境变量指定至少一个目标 URL。")
         sys.exit(1)
 
-    print(f"\n[System] 共加载了 {len(targets)} 个扫描目标，准备开始串行扫描...\n")
+    print(f"\n[System] 共加载了 {len(targets)} 个扫描目标，准备开始并发扫描 (并发数: {args.threads})...\n")
     
-    for i, t in enumerate(targets, 1):
+    import concurrent.futures
+    import threading
+
+    def scan_task(url: str, index: int, total: int):
         try:
-            print(f"\n>>> [{i}/{len(targets)}] 正在启动扫描任务: {t}")
-            run_pipeline(t, step=args.step)
+            print(f"\n>>> [{index}/{total}] [Thread-{threading.get_ident()}] 正在启动扫描任务: {url}")
+            run_pipeline(url, step=args.step)
         except Exception as e:
-            print(f"\n[Error] 扫描目标 {t} 发生未捕获的严重异常，已强制跳过。错误详情: {e}")
+            print(f"\n[Error] 扫描目标 {url} 发生未捕获的严重异常，已强制跳过。错误详情: {e}")
             import traceback
             traceback.print_exc()
-            continue
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+        futures = [executor.submit(scan_task, t, i, len(targets)) for i, t in enumerate(targets, 1)]
+        concurrent.futures.wait(futures)
 
     print(f"\n[System] 批量扫描完成！共处理了 {len(targets)} 个目标。")
 
