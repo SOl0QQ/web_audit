@@ -131,23 +131,6 @@ class AJAXActionInferResult(BaseModel):
     )
 
 # ── LangChain Prompt ───────────────────────────────────────
-
-class AuthBypassResult(BaseModel):
-    is_bypassed: bool = Field(
-        description="是否判定 Payload 成功绕过了登录验证"
-    )
-    confidence: str = Field(
-        description="判定信心指数: 'high' | 'medium' | 'low'"
-    )
-    bypass_evidence: List[str] = Field(
-        description="绕过成功的特征证据列表（如 '页面重定向到了/admin', '响应包含了Welcome', 'Set-Cookie 颁发了身份token' 等）",
-        default=[]
-    )
-    reason: str = Field(
-        description="判断的详细推理过程"
-    )
-
-# ── LangChain Prompt ───────────────────────────────────────
 AUTH_BYPASS_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """你是一个专业的 Web 安全审计专家，专注于识别身份验证绕过（Authentication Bypass）漏洞。
 你的任务是对「正常登录失败的基线响应」和「注入 Payload 后的测试响应」进行严格对比。
