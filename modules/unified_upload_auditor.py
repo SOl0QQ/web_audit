@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
-from prd.web_audit.core.llm_factory_test import get_llm
+from web_audit.core.llm_factory import get_llm
 
 class ExtractPathResult(BaseModel):
     extracted_path: Optional[str] = Field(

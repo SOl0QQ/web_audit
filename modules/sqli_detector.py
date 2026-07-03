@@ -15,7 +15,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
 from web_audit.core.parser import PageParser
-from prd.web_audit.core.llm_factory_test import get_llm
+from web_audit.core.llm_factory import get_llm
 
 # ── Bypass Payloads ───────────────────────────────────────────
 # 精选的 SQL 注入身份认证绕过 Payload（全面兼容多种数据库、WAF 绕过与多种闭合场景）

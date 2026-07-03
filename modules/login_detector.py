@@ -28,7 +28,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
 from web_audit.core.parser import PageParser
-from prd.web_audit.core.llm_factory_test import get_llm
+from web_audit.core.llm_factory import get_llm
 from web_audit.core.tool_discovery import ToolDiscovery
 from web_audit.core.playwright_interceptor import PlaywrightInterceptor
 from web_audit.config.settings import (
