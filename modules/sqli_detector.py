@@ -141,7 +141,16 @@ AUTH_BYPASS_PROMPT = ChatPromptTemplate.from_messages([
 3. **页面内容特征**：Payload 响应的着陆页文本中出现了 "Welcome", "Admin", "Sign Off", "Logout" 或内部账户菜单等已登录特征。
 4. **AJAX/API 成功标志**：如果页面是 AJAX 登录，Payload 响应内容由基线的 "error"、"false" 变为了 "success"、"true" 或 {{"status": "success"}} 等极其明显的成功状态词。
      
-请仔细对比基线和 Payload 的 Location、Status Code 与文本内容。只要跳转路径明显不同，或响应正文内容发生从失败到成功的本质逆转，即果断判定为绕过成功。"""),
+请仔细对比基线和 Payload 的 Location、Status Code 与文本内容。只要跳转路径明显不同，或响应正文内容发生从失败到成功的本质逆转，即果断判定为绕过成功。
+
+**【重要输出规则】**
+你必须**且只能**输出一个符合规范的 JSON 字典。
+绝不要在 JSON 前面加上 "thought" 或任何多余的废话和思考过程！
+必须包含以下字段：
+- "is_bypassed" (布尔值)
+- "confidence" (字符串: "high", "medium", "low")
+- "reason" (字符串: 你的分析过程)
+- "bypass_evidence" (字符串列表)"""),
     ("human", """目标 URL: {url}
 测试表单字段: {param}
 注入的 Payload: {probe}
