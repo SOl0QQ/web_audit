@@ -92,11 +92,14 @@ def run_pipeline(target_url: str, step: str = "all"):
             lower_url = upload_scan_url.lower()
             if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action"]):
                 import urllib.parse
-                upload_scan_url = urllib.parse.urljoin(target_url, ".")
+                # Ensure we join with a slash to get the root of the target_url, or just use target_url
+                parsed_target = urllib.parse.urlparse(target_url)
+                upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
                 print(f"  [System] 檢測到登錄著陸頁為 API/Action 端點 ({landing_page_url})，將上傳掃描起點修正為: {upload_scan_url}")
             elif "?" in upload_scan_url and "Login" in upload_scan_url:
                 import urllib.parse
-                upload_scan_url = urllib.parse.urljoin(target_url, ".")
+                parsed_target = urllib.parse.urlparse(target_url)
+                upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
 
         # ── Step 3: 文件上传功能识别 ───────────────────────
         if step in ["all", "upload_id"]:
@@ -201,8 +204,13 @@ def main():
                 line = line.strip()
                 # 过滤空行和注释
                 if line and not line.startswith('#'):
+                    # 防御性修复: 确保目标格式合法，补充 scheme 如果缺失
+                    if not line.startswith("http://") and not line.startswith("https://"):
+                        line = "http://" + line
                     targets.append(line)
     elif target_env:
+        if not target_env.startswith("http://") and not target_env.startswith("https://"):
+            target_env = "http://" + target_env
         targets.append(target_env)
 
     if not targets:
