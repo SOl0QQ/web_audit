@@ -249,7 +249,10 @@ class SQLiDetectorModule(BaseModule):
         print(f"  [AuthBypass] 发现 {len(form_params)} 个表单，准备获取失败基线并开始测试...")
 
         for form in form_params:
-            action_url = form["action"]
+            action_url = form.get("action", "")
+            # Ensure action_url is absolute
+            import urllib.parse
+            action_url = urllib.parse.urljoin(url, action_url) if action_url else url
             method = form["method"]
             params = form["params"]
             default_values = form.get("default_values", {})

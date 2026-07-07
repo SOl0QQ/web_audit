@@ -68,6 +68,9 @@ class UploadIdentifierModule(BaseModule):
         parser = PageParser(resp.text, url)
         forms = parser.get_upload_forms()
         
+        if forms:
+            print(f"      ✅ Phase 0 直接在当前目标页面发现上传点！({url})")
+        
         for f in forms:
             f["source_url"] = url
             f["referer_url"] = None  # 根页面没有父级
@@ -97,7 +100,7 @@ class UploadIdentifierModule(BaseModule):
                     sub_forms = sub_parser.get_upload_forms()
                     
                     if sub_forms:
-                        print(f"      ✅ Phase 1 发现上传点！")
+                        print(f"      ✅ Phase 1 发现上传点！({href})")
                         for f in sub_forms: 
                             f["source_url"] = href
                             f["referer_url"] = url  # 记录是由首页点进来的
@@ -177,8 +180,13 @@ class UploadIdentifierModule(BaseModule):
                     
                     if katana_urls:
                         print(f"  [UploadIdentifier] Katana 发现 {len(katana_urls)} 个 URL，开始验证...")
-                        # 过滤非同域 URL 并去重已访问的
-                        new_urls = [u for u in katana_urls if self._is_same_domain(url, u) and u not in visited]
+                        # 过滤非同域 URL、静态资源并去重已访问的
+                        new_urls = [
+                            u for u in katana_urls 
+                            if self._is_same_domain(url, u) 
+                            and u not in visited 
+                            and not PageParser.is_static_resource(u)
+                        ]
                         
                         for k_url in new_urls:
                             visited.add(k_url)
@@ -213,7 +221,7 @@ class UploadIdentifierModule(BaseModule):
             
             raw_action = form.get("action", "")
             form_id = form.get("id", "")
-            action_url = urllib.parse.urljoin(source, raw_action) or source
+            action_url = urllib.parse.urljoin(source, raw_action) if raw_action else source
             method = form["method"]
             
             # AJAX Infer Logic

@@ -155,6 +155,35 @@ class LoginDetectorModule(BaseModule):
             print("\n  [Layer 1] 外部工具无输出，直接进入递归 LLM 爬虫模式。")
             return self._recursive_llm_crawl(start_url, max_depth)
 
+        # 1. 安全加固：确保 candidate_urls 中没有缺少 scheme 的裸域名
+        # 2. 跨域过滤：排除与起始域名不一致的外部链接
+        import urllib.parse
+        start_parsed = urllib.parse.urlparse(start_url)
+        start_domain = start_parsed.hostname or ""
+
+        safe_candidates = []
+        for c in candidate_urls:
+            c = c.strip()
+            if not c:
+                continue
+            if not c.startswith("http://") and not c.startswith("https://"):
+                c = "http://" + c
+            
+            c_parsed = urllib.parse.urlparse(c)
+            c_domain = c_parsed.hostname or ""
+            
+            # 如果域名存在且与主域名不同，则丢弃
+            if c_domain and start_domain and c_domain != start_domain:
+                continue
+                
+            from web_audit.core.parser import PageParser
+            if PageParser.is_static_resource(c):
+                continue
+
+            if c not in safe_candidates:
+                safe_candidates.append(c)
+        candidate_urls = safe_candidates
+
         # ══════════════════════════════════════════════════════
         # Layer 2：关键词预排序 + LLM 精准过滤
         # ══════════════════════════════════════════════════════
@@ -219,6 +248,16 @@ class LoginDetectorModule(BaseModule):
 
         parser = PageParser(resp.text, url)
         features = parser.to_features()
+
+        # ── JS 跳转/动态渲染页 防御机制 ──────────────────────────────
+        # 如果页面没有任何表单，极有可能是遇到了 JS 跳转（如 window.location）或者需要纯 JS 渲染的 SPA
+        if not features.get("forms") and len(resp.text) < 10000:
+            print(f"  [System] 页面表单为空，疑似遇到 JS 动态跳转或 SPA 渲染页，启动 Playwright 深度抓取...")
+            rendered_html = self.requester.fetch_rendered_html(url)
+            if rendered_html and len(rendered_html) > len(resp.text):
+                print(f"  [✅ Playwright] 深度抓取成功，重新解析页面特征...")
+                parser = PageParser(rendered_html, url)
+                features = parser.to_features()
 
         # ── 啟動 Playwright 動態攔截 ──────────────────────────────
         for f in features.get("forms", []):

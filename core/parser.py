@@ -174,6 +174,20 @@ class PageParser:
             "meta_description": meta_desc,
         }
 
+    @staticmethod
+    def is_static_resource(url_or_path: str) -> bool:
+        """检查是否是明显的静态资源后缀，这类链接不需要进行动态安全审计。"""
+        import urllib.parse
+        path = urllib.parse.urlparse(url_or_path).path.lower()
+        static_extensions = (
+            '.css', '.js', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.webp', '.bmp',
+            '.woff', '.woff2', '.ttf', '.eot', '.otf',
+            '.mp4', '.mp3', '.avi', '.wav', '.webm',
+            '.pdf', '.zip', '.tar', '.gz', '.rar', '.7z',
+            '.xml', '.txt', '.csv', '.xls', '.xlsx', '.doc', '.docx', '.ppt', '.pptx'
+        )
+        return path.endswith(static_extensions)
+
     def get_all_links(self, limit: int = 100) -> List[Dict[str, str]]:
         """提取页面中所有的同域或相关链接，用于构建攻击面。"""
         links = []
@@ -183,6 +197,9 @@ class PageParser:
         for tag in self.soup.find_all(["a", "iframe"]):
             href = tag.get("href") or tag.get("src")
             if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+                continue
+            
+            if self.is_static_resource(href):
                 continue
             
             full_url = urllib.parse.urljoin(self.base_url, href)

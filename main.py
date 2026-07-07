@@ -34,6 +34,10 @@ def run_pipeline(target_url: str, step: str = "all"):
         target_url: 目标网站的起始 URL（不需要是登录页）
         step: 指定执行的模块 ("all", "login", "sqli", "upload_id", "upload_audit")
     """
+    # 全局防御性修复：确保 target_url 始终带有 http:// 协议前缀
+    if target_url and not target_url.startswith("http://") and not target_url.startswith("https://"):
+        target_url = "http://" + target_url
+
     pipeline_start_time = time.time()
     print(f"\n{'=' * 60}")
     print(f"  Web 安全审计流水线启动")
@@ -44,6 +48,15 @@ def run_pipeline(target_url: str, step: str = "all"):
 
     requester = Requester()
     reporter = Reporter(target_url)
+
+    # 发起初始探测，解析可能的全局重定向 (例如 http://test3 -> https://test3/main/)
+    print(f"  [System] 正在探测目标连通性与重定向...")
+    init_resp = requester.get(target_url)
+    if init_resp and init_resp.url != target_url:
+        print(f"  [System] 目标发生重定向: {target_url} -> {init_resp.url}")
+        target_url = init_resp.url
+        # 更新 reporter 的基础 URL
+        reporter.target_url = target_url
 
     # 跨模块共享状态
     analysis_url = target_url
@@ -93,12 +106,15 @@ def run_pipeline(target_url: str, step: str = "all"):
             if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action"]):
                 import urllib.parse
                 # Ensure we join with a slash to get the root of the target_url, or just use target_url
-                parsed_target = urllib.parse.urlparse(target_url)
+                # Safe parsing: ensure target_url has scheme before parsing so netloc isn't empty
+                safe_target = target_url if "://" in target_url else "http://" + target_url
+                parsed_target = urllib.parse.urlparse(safe_target)
                 upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
                 print(f"  [System] 檢測到登錄著陸頁為 API/Action 端點 ({landing_page_url})，將上傳掃描起點修正為: {upload_scan_url}")
             elif "?" in upload_scan_url and "Login" in upload_scan_url:
                 import urllib.parse
-                parsed_target = urllib.parse.urlparse(target_url)
+                safe_target = target_url if "://" in target_url else "http://" + target_url
+                parsed_target = urllib.parse.urlparse(safe_target)
                 upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
 
         # ── Step 3: 文件上传功能识别 ───────────────────────
