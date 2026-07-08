@@ -196,16 +196,17 @@ class UploadIdentifierModule(BaseModule):
                                 if not k_resp: continue
                                 
                                 k_parser = PageParser(k_resp.text, k_url)
-                                k_forms = k_parser.get_upload_forms()
                                 if k_forms:
                                     print(f"      ✅ Phase 3 在 Katana 发现的动态页面中找到上传点！({k_url})")
-                                    for f in k_forms: f["source_url"] = k_url
+                                    for f in k_forms: 
+                                        f["source_url"] = k_url
+                                        f["referer_url"] = url # Katana 是从起始 url 出发的
                                     all_upload_forms.extend(k_forms)
                                     break
                             except Exception as e:
                                 continue
                         
-        # 4. 整理结果
+        # 4. 整理结果与去重
         if not all_upload_forms:
             result["summary"] = "未发现文件上传功能"
             return result
@@ -216,11 +217,19 @@ class UploadIdentifierModule(BaseModule):
         llm = get_llm()
         ajax_chain = AJAX_INFER_PROMPT | llm.with_structured_output(AJAXActionInferResult)
 
+        seen_forms = set() # 用于去重，防止同一页面相同的表单被反复推断
+
         for form in all_upload_forms:
             source = form.get("source_url", url)
-            
             raw_action = form.get("action", "")
             form_id = form.get("id", "")
+            
+            # 去重指纹：同一来源页的同一 action 或 id 视为同一个表单
+            form_fingerprint = f"{source}_{raw_action}_{form_id}"
+            if form_fingerprint in seen_forms:
+                continue
+            seen_forms.add(form_fingerprint)
+            
             action_url = urllib.parse.urljoin(source, raw_action) if raw_action else source
             method = form["method"]
             
@@ -283,6 +292,7 @@ class UploadIdentifierModule(BaseModule):
             )
             finding_dict = finding.model_dump()
             finding_dict["found_on_page"] = source # 附加来源页信息
+            finding_dict["referer_url"] = form.get("referer_url") # 关键修复：把父级列表页 URL 传给 Step 4！
             result["findings"].append(finding_dict)
             print(f"  [UploadIdentifier] 成功记录上传端点: {action_url} (来源: {source})")
 
