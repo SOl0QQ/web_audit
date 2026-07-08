@@ -105,6 +105,8 @@ class UnifiedUploadAuditModule(BaseModule):
         
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
         upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']
+        
+        zero_score_links = []
 
         for link in new_links:
             score = 0
@@ -120,9 +122,15 @@ class UnifiedUploadAuditModule(BaseModule):
             if any(ud in link.lower() for ud in upload_dirs):
                 score += WEIGHT_DIR
             
+            if score == 0:
+                zero_score_links.append(link)
+                
             if score > max_score:
                 max_score = score
                 best_path = link
+                
+        if zero_score_links:
+            print(f"        [!] 有 {len(zero_score_links)} 个新增链接因得分为 0 被过滤，抽样显示: {list(zero_score_links)[:5]}")
         
         # 只有得分大于 0 的才认为是有效路径
         return best_path if max_score > 0 else None
