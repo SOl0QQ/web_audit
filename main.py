@@ -51,11 +51,22 @@ def run_pipeline(target_url: str, step: str = "all"):
 
     # 发起初始探测，解析可能的全局重定向 (例如 http://test3 -> https://test3/main/)
     print(f"  [System] 正在探测目标连通性与重定向...")
-    init_resp = requester.get(target_url)
-    if init_resp and init_resp.url != target_url:
-        print(f"  [System] 目标发生重定向: {target_url} -> {init_resp.url}")
+    # 允许 requests 自动追踪所有的重定向链 (allow_redirects=True 是默认的)
+    init_resp = requester.get(target_url, allow_redirects=True)
+    
+    if init_resp and init_resp.history:
+        # history 包含了所有的重定向过程，init_resp.url 是最终落地页
+        print(f"  [System] 检测到目标发生了 {len(init_resp.history)} 次重定向:")
+        for i, resp in enumerate(init_resp.history, 1):
+            print(f"           {i}. [{resp.status_code}] {resp.url} -> {resp.headers.get('Location', 'Unknown')}")
+        print(f"  [System] 最终目标确定为: {init_resp.url}")
+        
         target_url = init_resp.url
         # 更新 reporter 的基础 URL
+        reporter.target_url = target_url
+    elif init_resp and init_resp.url != target_url:
+        print(f"  [System] 目标发生重定向: {target_url} -> {init_resp.url}")
+        target_url = init_resp.url
         reporter.target_url = target_url
 
     # 跨模块共享状态

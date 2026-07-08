@@ -81,3 +81,4 @@ home/login
 api/login
 api/v1/login
 api/v2/login
+my_btectime
