@@ -113,11 +113,13 @@ class Requester:
                         "path": c.path if c.path else "/"
                     })
 
-                # 构建 extra_http_headers
+                # 构建 extra_http_headers 并强行禁用缓存
                 extra_headers = {}
                 for k, v in self.session.headers.items():
                     if k.lower() not in ['connection', 'accept-encoding', 'content-length']:
                         extra_headers[k] = v
+                extra_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                extra_headers["Pragma"] = "no-cache"
 
                 context = browser.new_context(
                     user_agent=self.session.headers.get("User-Agent", REQUEST_HEADERS["User-Agent"]),
@@ -130,15 +132,25 @@ class Requester:
                     context.add_cookies(pw_cookies)
 
                 page = context.new_page()
+                
+                # 强制禁用浏览器本地缓存
+                page.route("**/*", lambda route: route.continue_())
+                
                 # networkidle: 网络连接数 < 2 持续 500ms，确保 JS 渲染完成
-                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
+                # 添加随机参数彻底打穿静态页面缓存
+                import time
+                busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
+                page.goto(busting_url, wait_until="networkidle", timeout=self.timeout * 1000)
+                
                 html = page.content()
                 browser.close()
-                print(f"[Requester] Playwright 渲染成功 (携带 Session 状态): {url}")
+                print(f"[Requester] Playwright 渲染成功 (携带 Session 状态，强力防缓存): {url}")
                 return html
         except Exception as e:
             print(f"[Requester] Playwright 渲染失败 {url}: {e}，降级为 requests")
-            resp = self.get(url)
+            import time
+            busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
+            resp = self.get(busting_url)
             return resp.text if resp else None
 
     def fetch_network_resources(self, url: str) -> set:
