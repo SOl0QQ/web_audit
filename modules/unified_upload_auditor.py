@@ -336,7 +336,29 @@ class UnifiedUploadAuditModule(BaseModule):
                     if path:
                         print(f"        [+] 智能对比成功: 发现新增可疑资源 -> {path}")
 
-                # 4. 兜底：正则扫描
+                # 3.5 高级验证：Playwright 动态网络拦截 (SPA 兜底)
+                if not path and form.get("referer_url"):
+                    print(f"        [*] DOM 对比未发现路径，启动 Playwright 网络层拦截 (监听 {form.get('referer_url')})...")
+                    network_urls = self.requester.fetch_network_resources(form.get("referer_url"))
+                    if network_urls:
+                        # 在所有收集到的网络请求中，寻找包含文件核心名称的 URL
+                        core_name = filename.split("_", 1)[-1]
+                        for net_url in network_urls:
+                            if core_name in net_url:
+                                path = net_url
+                                print(f"        [+] 网络拦截成功: 发现携带 Payload 的请求 -> {path}")
+                                break
+                            
+                        # 如果没有找到精确文件名，宽松匹配：查找包含危险后缀或常见上传目录的网络请求
+                        if not path:
+                            for net_url in network_urls:
+                                lower_url = net_url.lower()
+                                if any(ext in lower_url for ext in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']):
+                                    path = net_url
+                                    print(f"        [+] 网络拦截宽松匹配成功: 发现新增危险请求 -> {path}")
+                                    break
+                                    
+                # 4. 兜底：正则扫描响应体
                 if not path:
                     try:
                         core_name = filename.split("_", 1)[-1]
@@ -345,7 +367,7 @@ class UnifiedUploadAuditModule(BaseModule):
                     except Exception: pass
                 
                 if not path:
-                    print(f"        [-] 未能定位上传文件路径，跳过验证。")
+                    print(f"        [-] 穷尽所有策略仍未能定位上传文件路径，跳过验证。")
                     continue
                     
                 # 5. 验证落地或 RCE

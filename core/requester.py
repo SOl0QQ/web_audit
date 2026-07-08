@@ -141,6 +141,71 @@ class Requester:
             resp = self.get(url)
             return resp.text if resp else None
 
+    def fetch_network_resources(self, url: str) -> set:
+        """
+        使用 Playwright 真实浏览器访问指定 URL，并在后台监听网络层。
+        截获页面在加载时所发起的所有资源请求（AJAX, 图片, 静态资源等）。
+        解决前端框架 SPA (Vue/React) 在上传后通过异步请求获取图片列表的寻址难题。
+        """
+        from web_audit.config.settings import KATANA_ENABLED
+        if not KATANA_ENABLED:
+            return set()
+            
+        collected_urls = set()
+        print(f"[Requester] 启动 Playwright 网络拦截器，监听目标: {url}")
+        
+        try:
+            from playwright.sync_api import sync_playwright
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                
+                # 准备 Playwright 需要的 cookie 格式，维持身份验证
+                pw_cookies = []
+                import urllib.parse
+                parsed_url = urllib.parse.urlparse(url)
+                domain = parsed_url.hostname
+                
+                for c in self.session.cookies:
+                    pw_cookies.append({
+                        "name": c.name,
+                        "value": c.value,
+                        "domain": c.domain if c.domain else domain,
+                        "path": c.path if c.path else "/"
+                    })
+
+                extra_headers = {k: v for k, v in self.session.headers.items() 
+                               if k.lower() not in ['connection', 'accept-encoding', 'content-length']}
+
+                context = browser.new_context(
+                    user_agent=self.session.headers.get("User-Agent", REQUEST_HEADERS["User-Agent"]),
+                    ignore_https_errors=not self.verify_ssl,
+                    extra_http_headers=extra_headers
+                )
+                
+                if pw_cookies:
+                    context.add_cookies(pw_cookies)
+
+                page = context.new_page()
+                
+                # 设置网络请求监听器
+                def handle_request(request):
+                    # 忽略直接导航到主页面的请求
+                    if request.url != url:
+                        collected_urls.add(request.url)
+                        
+                page.on("request", handle_request)
+                
+                # 访问页面，等待网络空闲以确保异步请求都发出了
+                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
+                browser.close()
+                
+                print(f"[Requester] Playwright 拦截完成，共捕获 {len(collected_urls)} 个网络请求")
+                return collected_urls
+                
+        except Exception as e:
+            print(f"[Requester] Playwright 网络拦截失败 {url}: {e}")
+            return set()
+
     def close(self):
         """关闭 Session，释放连接资源。"""
         self.session.close()
