@@ -256,6 +256,10 @@ class UnifiedUploadAuditModule(BaseModule):
                 pass
 
             observation_pages = list(observation_pages)
+            # 限制观测页面的数量，避免快照过大或请求过多导致极速减慢（最多取前 10 个）
+            if len(observation_pages) > 10:
+                observation_pages = observation_pages[:10]
+                
             print(f"    [*] 记录 DOM 基线，将观测以下页面: {observation_pages}")
             
             baseline_links = set()

@@ -175,6 +175,10 @@ class Requester:
 
                 extra_headers = {k: v for k, v in self.session.headers.items() 
                                if k.lower() not in ['connection', 'accept-encoding', 'content-length']}
+                               
+                # 强行禁用服务器端/CDN缓存
+                extra_headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                extra_headers["Pragma"] = "no-cache"
 
                 context = browser.new_context(
                     user_agent=self.session.headers.get("User-Agent", REQUEST_HEADERS["User-Agent"]),
@@ -187,7 +191,9 @@ class Requester:
 
                 page = context.new_page()
                 
-                # 设置网络请求监听器
+                # 设置网络请求监听器，并强制禁用浏览器本地缓存
+                page.route("**/*", lambda route: route.continue_())
+                
                 def handle_request(request):
                     # 忽略直接导航到主页面的请求
                     if request.url != url:
@@ -196,7 +202,10 @@ class Requester:
                 page.on("request", handle_request)
                 
                 # 访问页面，等待网络空闲以确保异步请求都发出了
-                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
+                # 添加一个随机参数彻底打穿静态页面缓存
+                import time
+                busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
+                page.goto(busting_url, wait_until="networkidle", timeout=self.timeout * 1000)
                 browser.close()
                 
                 print(f"[Requester] Playwright 拦截完成，共捕获 {len(collected_urls)} 个网络请求")
