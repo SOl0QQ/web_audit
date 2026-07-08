@@ -41,7 +41,7 @@ TOOL_DISCOVERY_ENABLED = True
 KATANA_ENABLED = True
 KATANA_PATH = os.path.expanduser("~/go/bin/katana")  # go install 默认输出路径
 KATANA_DEPTH = 3                 # 爬取深度
-KATANA_TIMEOUT = 60              # Python 进程硬截止（秒）：到期强制终止，返回已收集结果
+KATANA_TIMEOUT = 120              # Python 进程硬截止（秒）：到期强制终止，返回已收集结果
 KATANA_REQUEST_TIMEOUT = 10      # 传给 katana 的单次 HTTP 请求超时（秒）
                                  # 两者需分开：REQUEST_TIMEOUT 短 → katana 能在 TIMEOUT 内爬多个页面
 KATANA_RATE_LIMIT = 2           # katana 每秒最大请求数 (-rl 50)
@@ -59,7 +59,7 @@ DIRSEARCH_MAX_RATE = 2          # dirsearch 每秒最大请求数 (--max-rate 20
 # 登录页专用小字典（~80条），聚焦常见登录路径，快速精准
 # 设为 None 则使用 dirsearch 默认字典（更全但耗时数分钟）
 DIRSEARCH_WORDLIST = os.path.join(os.path.dirname(__file__), "login_wordlist.txt")
-DIRSEARCH_MAX_TIME = 60          # dirsearch 进程最大运行时间（秒）
+DIRSEARCH_MAX_TIME = 120          # dirsearch 进程最大运行时间（秒）
 
 # ── 审计结果配置 ───────────────────────────────────────────
 REPORT_OUTPUT_DIR = "./reports"  # 报告输出目录
