@@ -243,6 +243,7 @@ class SQLiDetectorModule(BaseModule):
             form_params = parser.get_all_form_params()
 
         if not form_params:
+            print(f"  [AuthBypass] ⚠️ 在目标页面未发现任何 HTML 表单，无法进行注入测试 (可能这是纯后端 API 或无表单页面)。")
             result["summary"] = "未发现可供测试的表单输入参数"
             return result
 
