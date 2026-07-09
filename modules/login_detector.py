@@ -258,6 +258,18 @@ class LoginDetectorModule(BaseModule):
                 print(f"  [✅ Playwright] 深度抓取成功，重新解析页面特征...")
                 parser = PageParser(rendered_html, url)
                 features = parser.to_features()
+                
+        # ── 防御 LLM 幻觉 ──────────────────────────────
+        # 经过 Playwright 深度渲染后，如果连一个 <form> 或游离的 <input> 都没有，那绝对不是登录页。
+        # 直接拦截，防止 LLM 因为看到报错里的 password 字样而产生幻觉误判。
+        if not features.get("forms"):
+            print(f"  [System] 页面无任何表单或输入框，触发防幻觉机制，直接判定非登录页。")
+            return LoginDetectorResult(
+                is_login_page=False,
+                confidence=1.0,
+                reason="页面中不存在任何 HTML 表单或输入框控件（包括经过 JS 渲染后），物理上无法完成认证，为防止 LLM 幻觉直接拦截。",
+                potential_login_links=[]
+            )
 
         # ── 啟動 Playwright 動態攔截 ──────────────────────────────
         for f in features.get("forms", []):
