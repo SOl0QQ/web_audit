@@ -646,6 +646,14 @@ class SQLiDetectorModule(BaseModule):
             landing_resp = self.requester.get(location)
             if landing_resp:
                 soup = BeautifulSoup(landing_resp.text, "html.parser")
+                
+                # 提取着陆页的 JS 弹窗
+                js_alerts = []
+                for script in soup.find_all("script"):
+                    if script.string:
+                        matches = re.findall(r"(?:alert|confirm|prompt)\s*\(\s*['\"](.*?)['\"]\s*\)", script.string, re.IGNORECASE)
+                        js_alerts.extend(matches)
+                        
                 title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
                 for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
                     tag.extract()
@@ -655,11 +663,14 @@ class SQLiDetectorModule(BaseModule):
 
                 # 最终真实 URL（可能与 Location 不同，如有二次跳转）
                 final_url = landing_resp.url
-                landing_content = (
-                    f"[着陆页最终 URL]: {final_url}\n"
-                    f"[着陆页 Title]: {title}\n"
-                    f"[着陆页可见文本 (用户信息/菜单等)]:\n{text[:2000]}"
-                )
+                landing_content_parts = [
+                    f"[着陆页最终 URL]: {final_url}",
+                    f"[着陆页 Title]: {title}"
+                ]
+                if js_alerts:
+                    landing_content_parts.append(f"[着陆页 JS Alert (重要弹窗)]: {' | '.join(js_alerts)}")
+                landing_content_parts.append(f"[着陆页可见文本 (用户信息/菜单等)]:\n{text[:2000]}")
+                landing_content = "\n".join(landing_content_parts)
 
         combined = raw_text
         if landing_content:
@@ -707,12 +718,24 @@ class SQLiDetectorModule(BaseModule):
             from bs4 import BeautifulSoup
             import re
             soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # 提取 JS 弹窗 (alert/confirm/prompt)，这对很多老旧的 PHP 系统极其关键
+            js_alerts = []
+            for script in soup.find_all("script"):
+                if script.string:
+                    # 匹配类似 alert('用户名错误'); 这样的代码
+                    matches = re.findall(r"(?:alert|confirm|prompt)\s*\(\s*['\"](.*?)['\"]\s*\)", script.string, re.IGNORECASE)
+                    js_alerts.extend(matches)
+                    
             title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
             for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
                 tag.extract()
             text = soup.get_text(separator=" ", strip=True)
             text = re.sub(r"\s+", " ", text)
+            
             lines.append(f"\n[Page Title]: {title}")
+            if js_alerts:
+                lines.append(f"[JS Alert (重要弹窗)]: {' | '.join(js_alerts)}")
             lines.append(f"[Visible Text]:\n{text[:1500]}")
         else:
             lines.append("\n[Body]: (empty)")
