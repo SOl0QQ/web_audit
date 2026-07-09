@@ -571,6 +571,9 @@ class SQLiDetectorModule(BaseModule):
 
         # 跟随重定向获取着陆页，让 LLM 同时看到「302 Header」和「着陆页真实内容」
         payload_resp_text, auto_landing_url, _ = self._format_with_landing(resp)
+        
+        # [DEBUG] 打印提取到的关键上下文，方便排查为什么没有抓到弹窗
+        print(f"      [Debug] 提取到的上下文摘要片段:\n{payload_resp_text[:500]}...")
 
         try:
             llm_result: AuthBypassResult = self._chain.invoke({
@@ -584,6 +587,7 @@ class SQLiDetectorModule(BaseModule):
             print(f"      ← {icon} (信心: {llm_result.confidence}) | {llm_result.reason[:70]}...")
         except Exception as e:
             print(f"      [-] LLM 分析失败: {e}")
+            print(f"      [Debug] 传给 LLM 的 payload_response 摘要:\n{payload_resp_text[:1000]}...")
             return None
 
         if llm_result and llm_result.is_bypassed:
@@ -649,6 +653,7 @@ class SQLiDetectorModule(BaseModule):
                 
                 # 提取着陆页的 JS 弹窗
                 js_alerts = self._extract_js_alerts_from_soup(soup)
+                inline_scripts = self._extract_short_inline_scripts(soup)
                         
                 title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
                 for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
@@ -665,12 +670,57 @@ class SQLiDetectorModule(BaseModule):
                 ]
                 if js_alerts:
                     landing_content_parts.append(f"[着陆页 JS Alert (重要弹窗)]: {' | '.join(js_alerts)}")
+                if inline_scripts:
+                    landing_content_parts.append(f"\n[着陆页内联 JS 脚本 (可能包含报错逻辑)]:\n{inline_scripts}")
                 landing_content_parts.append(f"[着陆页可见文本 (用户信息/菜单等)]:\n{text[:2000]}")
                 landing_content = "\n".join(landing_content_parts)
+        elif raw_resp.status_code == 200 and raw_resp.text:
+            # 深度检测：探测是否存在 HTML Meta Refresh 或 JS 前端跳转 (绕过 HTTP 302 限制)
+            soup = BeautifulSoup(raw_resp.text, "html.parser")
+            meta_refresh = soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
+            next_url = None
+            
+            if meta_refresh and meta_refresh.get("content"):
+                content = meta_refresh.get("content")
+                parts = re.split(r'url\s*=\s*', content, flags=re.IGNORECASE)
+                if len(parts) > 1:
+                    next_url = parts[1].strip('\'" ')
+            else:
+                js_match = re.search(r'window\.location(?:\.href|\.replace)?\s*[=(]\s*[\'"]([^\'"]+)[\'"]', raw_resp.text)
+                if js_match:
+                    next_url = js_match.group(1).strip()
+                    
+            if next_url:
+                full_next_url = urllib.parse.urljoin(raw_resp.url, next_url)
+                print(f"      → 检测到前端跳转 (Meta/JS)，正在追溯着陆页: {full_next_url}")
+                landing_url = full_next_url
+                landing_resp = self.requester.get(full_next_url)
+                if landing_resp:
+                    soup2 = BeautifulSoup(landing_resp.text, "html.parser")
+                    js_alerts = self._extract_js_alerts_from_soup(soup2)
+                    inline_scripts = self._extract_short_inline_scripts(soup2)
+                    title = soup2.title.string.strip() if soup2.title and soup2.title.string else "No Title"
+                    for tag in soup2(["script", "style", "noscript", "meta", "link", "svg", "head"]):
+                        tag.extract()
+                    text = soup2.get_text(separator=" ", strip=True)
+                    text = re.sub(r"\s+", " ", text)
+                    landing_plain_text = text
+
+                    final_url = landing_resp.url
+                    landing_content_parts = [
+                        f"[前端跳转着陆页最终 URL]: {final_url}",
+                        f"[着陆页 Title]: {title}"
+                    ]
+                    if js_alerts:
+                        landing_content_parts.append(f"[着陆页 JS Alert (重要弹窗)]: {' | '.join(js_alerts)}")
+                    if inline_scripts:
+                        landing_content_parts.append(f"\n[着陆页内联 JS 脚本 (可能包含报错逻辑)]:\n{inline_scripts}")
+                    landing_content_parts.append(f"[着陆页可见文本 (用户信息/菜单等)]:\n{text[:2000]}")
+                    landing_content = "\n".join(landing_content_parts)
 
         combined = raw_text
         if landing_content:
-            combined += f"\n\n=== 跟随重定向后的着陆页（关键对比依据）===\n{landing_content}"
+            combined += f"\n\n=== 跟随重定向/前端跳转后的着陆页（关键对比依据）===\n{landing_content}"
         else:
             combined += "\n\n[备注: 响应无重定向，或着陆页请求失败]"
 
@@ -717,6 +767,8 @@ class SQLiDetectorModule(BaseModule):
             
             # 提取 JS 弹窗 (alert/confirm/prompt)，这对很多老旧的 PHP 系统极其关键
             js_alerts = self._extract_js_alerts_from_soup(soup)
+            # 终极兜底：提取较短的内联脚本
+            inline_scripts = self._extract_short_inline_scripts(soup)
                     
             title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
             for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
@@ -727,7 +779,9 @@ class SQLiDetectorModule(BaseModule):
             lines.append(f"\n[Page Title]: {title}")
             if js_alerts:
                 lines.append(f"[JS Alert (重要弹窗)]: {' | '.join(js_alerts)}")
-            lines.append(f"[Visible Text]:\n{text[:1500]}")
+            if inline_scripts:
+                lines.append(f"\n[内联 JS 脚本 (可能包含报错逻辑)]:\n{inline_scripts}")
+            lines.append(f"\n[Visible Text]:\n{text[:1500]}")
         else:
             lines.append("\n[Body]: (empty)")
 
@@ -767,3 +821,16 @@ class SQLiDetectorModule(BaseModule):
                             
         # 去重并保持顺序
         return list(dict.fromkeys(js_alerts))
+
+    def _extract_short_inline_scripts(self, soup) -> str:
+        """提取页面中较短的内联脚本，作为终极兜底，防止遗漏任何自定义的弹窗函数 (如 parent.ShowError)。"""
+        inline_scripts = []
+        for script in soup.find_all("script"):
+            # 只提取没有 src 属性的内联脚本
+            if not script.get("src"):
+                content = script.get_text(strip=True)
+                if content and len(content) < 800:
+                    inline_scripts.append(content)
+        if inline_scripts:
+            return "\n".join(inline_scripts)[:1500]
+        return ""
