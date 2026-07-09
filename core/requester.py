@@ -139,7 +139,15 @@ class Requester:
                 # networkidle: 网络连接数 < 2 持续 500ms，确保 JS 渲染完成
                 # 添加随机参数彻底打穿静态页面缓存
                 import time
-                busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
+                import urllib.parse
+                parsed = urllib.parse.urlparse(url)
+                query = parsed.query
+                cb_param = f"_cb={int(time.time() * 1000)}"
+                new_query = f"{query}&{cb_param}" if query else cb_param
+                busting_url = urllib.parse.urlunparse((
+                    parsed.scheme, parsed.netloc, parsed.path, 
+                    parsed.params, new_query, parsed.fragment
+                ))
                 page.goto(busting_url, wait_until="networkidle", timeout=self.timeout * 1000)
                 
                 html = page.content()
@@ -149,7 +157,15 @@ class Requester:
         except Exception as e:
             print(f"[Requester] Playwright 渲染失败 {url}: {e}，降级为 requests")
             import time
-            busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
+            import urllib.parse
+            parsed = urllib.parse.urlparse(url)
+            query = parsed.query
+            cb_param = f"_cb={int(time.time() * 1000)}"
+            new_query = f"{query}&{cb_param}" if query else cb_param
+            busting_url = urllib.parse.urlunparse((
+                parsed.scheme, parsed.netloc, parsed.path, 
+                parsed.params, new_query, parsed.fragment
+            ))
             resp = self.get(busting_url)
             return resp.text if resp else None
 

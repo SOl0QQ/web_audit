@@ -264,7 +264,19 @@ class UnifiedUploadAuditModule(BaseModule):
                 pass
 
             observation_pages = list(observation_pages)
-            # 限制观测页面的数量，避免快照过大或请求过多导致极速减慢（最多取前 10 个）
+            
+            # 智能扩展观测面：如果我们在“编辑页”或“新增页”上传，上传成功后图片往往显示在“列表页”。
+            # 列表页通常是当前 URL 的上一级目录，因此我们将父级目录也加入观测池
+            import urllib.parse
+            for page_url in [url, form.get("referer_url"), form.get("found_on_page")]:
+                if page_url:
+                    # 获取上一级目录，例如 /admin/user/edit.php -> /admin/user/
+                    parent_dir = urllib.parse.urljoin(page_url, ".")
+                    if parent_dir and parent_dir not in observation_pages:
+                        observation_pages.append(parent_dir)
+            
+            # 去重并限制数量
+            observation_pages = list(set(observation_pages))
             if len(observation_pages) > 10:
                 observation_pages = observation_pages[:10]
                 

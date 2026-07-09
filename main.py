@@ -56,18 +56,52 @@ def run_pipeline(target_url: str, step: str = "all"):
     
     if init_resp and init_resp.history:
         # history 包含了所有的重定向过程，init_resp.url 是最终落地页
-        print(f"  [System] 检测到目标发生了 {len(init_resp.history)} 次重定向:")
+        print(f"  [System] 检测到目标发生了 {len(init_resp.history)} 次 HTTP 重定向:")
         for i, resp in enumerate(init_resp.history, 1):
             print(f"           {i}. [{resp.status_code}] {resp.url} -> {resp.headers.get('Location', 'Unknown')}")
-        print(f"  [System] 最终目标确定为: {init_resp.url}")
+        print(f"  [System] 当前 HTTP 落地页为: {init_resp.url}")
+        target_url = init_resp.url
+    elif init_resp and init_resp.url.rstrip("/") != target_url.rstrip("/"):
+        print(f"  [System] 目标发生 HTTP 重定向: {target_url} -> {init_resp.url}")
+        target_url = init_resp.url
+
+    # 深度检测：探测是否存在 HTML Meta Refresh 或 JS 前端跳转 (绕过 requests 限制)
+    if init_resp and init_resp.text:
+        import re
+        import urllib.parse
+        from bs4 import BeautifulSoup
         
-        target_url = init_resp.url
-        # 更新 reporter 的基础 URL
-        reporter.target_url = target_url
-    elif init_resp and init_resp.url != target_url:
-        print(f"  [System] 目标发生重定向: {target_url} -> {init_resp.url}")
-        target_url = init_resp.url
-        reporter.target_url = target_url
+        soup = BeautifulSoup(init_resp.text, "html.parser")
+        meta_refresh = soup.find("meta", attrs={"http-equiv": lambda x: x and x.lower() == "refresh"})
+        next_url = None
+        
+        if meta_refresh and meta_refresh.get("content"):
+            content = meta_refresh.get("content")
+            # 格式例如 "0;url=https://test.com/mainpages/index.php"
+            parts = re.split(r'url\s*=\s*', content, flags=re.IGNORECASE)
+            if len(parts) > 1:
+                next_url = parts[1].strip('\'" ')
+        else:
+            # 尝试正则匹配基本的 JS 跳转: window.location.href = '/mainpages/index.php';
+            js_match = re.search(r'window\.location(?:\.href|\.replace)?\s*[=(]\s*[\'"]([^\'"]+)[\'"]', init_resp.text)
+            if js_match:
+                next_url = js_match.group(1).strip()
+                
+        if next_url:
+            full_next_url = urllib.parse.urljoin(target_url, next_url)
+            print(f"  [System] 检测到前端跳转 (Meta/JS): {target_url} -> {full_next_url}")
+            print(f"  [System] 正在追溯前端跳转...")
+            # 再发一次请求追踪
+            second_resp = requester.get(full_next_url, allow_redirects=True)
+            if second_resp:
+                target_url = second_resp.url
+                print(f"  [System] 最终目标确定为: {target_url}")
+            else:
+                target_url = full_next_url
+        else:
+            print(f"  [System] 最终目标确定为: {target_url}")
+
+    reporter.target_url = target_url
 
     # 跨模块共享状态
     analysis_url = target_url
