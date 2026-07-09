@@ -528,6 +528,10 @@ class SQLiDetectorModule(BaseModule):
             return None
         # 同时跟随重定向获取着陆页，给 LLM 提供更丰富的对比上下文
         formatted, _, landing_plain_text = self._format_with_landing(resp)
+        
+        # [DEBUG] 打印基线响应
+        print(f"      [Debug] 基线响应提取摘要 (传给 LLM 作为对照组):\n{formatted[:500]}...\n" + "-"*40)
+        
         return formatted, landing_plain_text
 
     def _probe_param(
@@ -573,7 +577,7 @@ class SQLiDetectorModule(BaseModule):
         payload_resp_text, auto_landing_url, _ = self._format_with_landing(resp)
         
         # [DEBUG] 打印提取到的关键上下文，方便排查为什么没有抓到弹窗
-        print(f"      [Debug] 提取到的上下文摘要片段:\n{payload_resp_text[:500]}...")
+        print(f"      [Debug] Payload响应提取摘要 (传给 LLM 的测试组):\n{payload_resp_text[:500]}...\n" + "-"*40)
 
         try:
             llm_result: AuthBypassResult = self._chain.invoke({
@@ -583,6 +587,14 @@ class SQLiDetectorModule(BaseModule):
                 "baseline_response": baseline_resp_text,
                 "payload_response": payload_resp_text,
             })
+            
+            # [DEBUG] 打印 LLM 返回的具体判断结果
+            print(f"      [Debug] ⬇️ LLM 返回结果:")
+            print(f"      - 是否绕过: {llm_result.is_bypassed}")
+            print(f"      - 信心指数: {llm_result.confidence}")
+            print(f"      - 判断理由: {llm_result.reason}")
+            print(f"      - 绕过证据: {llm_result.bypass_evidence}\n" + "="*40)
+            
             icon = "🚨 绕过成功" if llm_result.is_bypassed else "❌ 未绕过"
             print(f"      ← {icon} (信心: {llm_result.confidence}) | {llm_result.reason[:70]}...")
         except Exception as e:
