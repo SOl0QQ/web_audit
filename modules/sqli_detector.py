@@ -648,11 +648,7 @@ class SQLiDetectorModule(BaseModule):
                 soup = BeautifulSoup(landing_resp.text, "html.parser")
                 
                 # 提取着陆页的 JS 弹窗
-                js_alerts = []
-                for script in soup.find_all("script"):
-                    if script.string:
-                        matches = re.findall(r"(?:alert|confirm|prompt)\s*\(\s*['\"](.*?)['\"]\s*\)", script.string, re.IGNORECASE)
-                        js_alerts.extend(matches)
+                js_alerts = self._extract_js_alerts_from_soup(soup)
                         
                 title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
                 for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
@@ -720,12 +716,7 @@ class SQLiDetectorModule(BaseModule):
             soup = BeautifulSoup(resp.text, "html.parser")
             
             # 提取 JS 弹窗 (alert/confirm/prompt)，这对很多老旧的 PHP 系统极其关键
-            js_alerts = []
-            for script in soup.find_all("script"):
-                if script.string:
-                    # 匹配类似 alert('用户名错误'); 这样的代码
-                    matches = re.findall(r"(?:alert|confirm|prompt)\s*\(\s*['\"](.*?)['\"]\s*\)", script.string, re.IGNORECASE)
-                    js_alerts.extend(matches)
+            js_alerts = self._extract_js_alerts_from_soup(soup)
                     
             title = soup.title.string.strip() if soup.title and soup.title.string else "No Title"
             for tag in soup(["script", "style", "noscript", "meta", "link", "svg", "head"]):
@@ -741,3 +732,38 @@ class SQLiDetectorModule(BaseModule):
             lines.append("\n[Body]: (empty)")
 
         return "\n".join(lines)
+        
+    def _extract_js_alerts_from_soup(self, soup) -> List[str]:
+        """增强版 JS 弹窗提取，支持变量、流行 UI 库以及 body onload 等。"""
+        import re
+        js_alerts = []
+        
+        # 匹配原生 alert/confirm/prompt，以及流行 UI 库如 layer.msg, Swal.fire 等
+        # (?:window\.)?(?:alert|confirm|prompt|layer\.msg|layer\.alert|layer\.confirm|Swal\.fire|toastr\.(?:error|warning|info|success)|\$\.messager\.alert)
+        pattern = re.compile(r"(?:window\.)?(?:alert|confirm|prompt|layer\.msg|layer\.alert|layer\.confirm|Swal\.fire|toastr\.(?:error|warning|info|success)|\$\.messager\.alert)\s*\(\s*(.*?)\s*\)", re.IGNORECASE | re.DOTALL)
+        
+        # 1. 扫描所有 <script> 标签
+        for script in soup.find_all("script"):
+            # 使用 .text 而不是 .string，防止 HTML 注释导致 .string 为 None
+            content = script.get_text()
+            if content:
+                matches = pattern.findall(content)
+                for m in matches:
+                    # 截断过长的匹配（比如 JSON 对象），并去除两端引号
+                    val = m.strip('\'" \n\r')[:100]
+                    if val:
+                        js_alerts.append(val)
+                        
+        # 2. 扫描所有带有 onload / onerror 属性的标签 (如 <body onload="...">)
+        for tag in soup.find_all(True):
+            for attr in ["onload", "onerror"]:
+                val = tag.get(attr)
+                if val and isinstance(val, str):
+                    matches = pattern.findall(val)
+                    for m in matches:
+                        clean_val = m.strip('\'" \n\r')[:100]
+                        if clean_val:
+                            js_alerts.append(clean_val)
+                            
+        # 去重并保持顺序
+        return list(dict.fromkeys(js_alerts))
