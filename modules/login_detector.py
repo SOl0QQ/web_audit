@@ -159,8 +159,10 @@ class LoginDetectorModule(BaseModule):
             c_parsed = urllib.parse.urlparse(c)
             c_domain = c_parsed.hostname or ""
             
-            if c_domain and start_domain and c_domain != start_domain:
-                continue
+            # 放宽跨域检测：只要主域名互相包含（例如 www.btec.ac.th 和 btec.ac.th）就视为同站
+            if c_domain and start_domain:
+                if start_domain not in c_domain and c_domain not in start_domain:
+                    continue
                 
             from web_audit.core.parser import PageParser
             if PageParser.is_static_resource(c):
