@@ -34,6 +34,7 @@ from web_audit.core.playwright_interceptor import PlaywrightInterceptor
 from web_audit.config.settings import (
     CRAWLER_MAX_DEPTH,
     TOOL_DISCOVERY_ENABLED,
+    STRICT_LOGIN_CHECK,
 )
 
 
@@ -257,6 +258,38 @@ class LoginDetectorModule(BaseModule):
                         f["action"] = real_url
                         f["_playwright_note"] = "注意：此 action 原本為空，這是 Playwright 動態攔截到的真實 AJAX 提交位址！"
                     break
+
+        # ── 启发式硬规则（防漏报与防 LLM 崩溃机制） ──────────────────────────────
+        # 如果表单中明确包含密码框，或者含有强烈的登录特征（如 email + login），直接判定为登录页！
+        has_password = False
+        login_hints = ["user", "name", "email", "login", "sign", "auth", "account", "log"]
+        has_login_hint = False
+
+        for f in features.get("forms", []):
+            for inp in f.get("inputs", []):
+                inp_type = inp.get("type", "").lower()
+                inp_name = inp.get("name", "").lower()
+                inp_id = inp.get("id", "").lower()
+                
+                if inp_type == "password" or "pass" in inp_name or "pwd" in inp_name:
+                    has_password = True
+                if any(hint in inp_name or hint in inp_id for hint in login_hints):
+                    has_login_hint = True
+                    
+            # 检查 action 是否包含 login 特征
+            action = f.get("action", "").lower()
+            if any(hint in action for hint in login_hints):
+                has_login_hint = True
+
+        # 如果包含密码框，或者处于宽松模式且包含用户名/邮箱特征
+        if has_password or (not STRICT_LOGIN_CHECK and has_login_hint):
+            print(f"  [System] 启发式规则命中 (pwd={has_password}, hint={has_login_hint}): 明确具有认证表单特征，跳过 LLM！")
+            return LoginDetectorResult(
+                is_login_page=True,
+                confidence=1.0,
+                reason="[启发式规则] 页面包含明显的认证表单特征 (密码框或登录输入框)，直接进入漏洞测试链。",
+                potential_login_links=[]
+            )
 
         try:
             result: LoginDetectorResult = self._chain.invoke({

@@ -16,6 +16,7 @@ from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
 from web_audit.core.parser import PageParser
 from web_audit.core.llm_factory import get_llm
+from web_audit.config.settings import DEBUG_MODE
 
 # ── Bypass Payloads ───────────────────────────────────────────
 # 精选的 SQL 注入身份认证绕过 Payload（全面兼容多种数据库、WAF 绕过与多种闭合场景）
@@ -531,7 +532,8 @@ class SQLiDetectorModule(BaseModule):
         formatted, _, landing_plain_text = self._format_with_landing(resp)
         
         # [DEBUG] 打印基线响应
-        print(f"      [Debug] 基线响应提取摘要 (传给 LLM 作为对照组):\n{formatted[:500]}...\n" + "-"*40)
+        if DEBUG_MODE:
+            print(f"      [Debug] 基线响应提取摘要 (传给 LLM 作为对照组):\n{formatted[:500]}...\n" + "-"*40)
         
         return formatted, landing_plain_text
 
@@ -578,7 +580,8 @@ class SQLiDetectorModule(BaseModule):
         payload_resp_text, auto_landing_url, _ = self._format_with_landing(resp)
         
         # [DEBUG] 打印提取到的关键上下文，方便排查为什么没有抓到弹窗
-        print(f"      [Debug] Payload响应提取摘要 (传给 LLM 的测试组):\n{payload_resp_text[:500]}...\n" + "-"*40)
+        if DEBUG_MODE:
+            print(f"      [Debug] Payload响应提取摘要 (传给 LLM 的测试组):\n{payload_resp_text[:500]}...\n" + "-"*40)
 
         try:
             llm_result: AuthBypassResult = self._chain.invoke({
@@ -590,17 +593,19 @@ class SQLiDetectorModule(BaseModule):
             })
             
             # [DEBUG] 打印 LLM 返回的具体判断结果
-            print(f"      [Debug] ⬇️ LLM 返回结果:")
-            print(f"      - 是否绕过: {llm_result.is_bypassed}")
-            print(f"      - 信心指数: {llm_result.confidence}")
-            print(f"      - 判断理由: {llm_result.reason}")
-            print(f"      - 绕过证据: {llm_result.bypass_evidence}\n" + "="*40)
+            if DEBUG_MODE:
+                print(f"      [Debug] ⬇️ LLM 返回结果:")
+                print(f"      - 是否绕过: {llm_result.is_bypassed}")
+                print(f"      - 信心指数: {llm_result.confidence}")
+                print(f"      - 判断理由: {llm_result.reason}")
+                print(f"      - 绕过证据: {llm_result.bypass_evidence}\n" + "="*40)
             
             icon = "🚨 绕过成功" if llm_result.is_bypassed else "❌ 未绕过"
             print(f"      ← {icon} (信心: {llm_result.confidence}) | {llm_result.reason[:70]}...")
         except Exception as e:
             print(f"      [-] LLM 分析失败: {e}")
-            print(f"      [Debug] 传给 LLM 的 payload_response 摘要:\n{payload_resp_text[:1000]}...")
+            if DEBUG_MODE:
+                print(f"      [Debug] 传给 LLM 的 payload_response 摘要:\n{payload_resp_text[:1000]}...")
             return None
 
         if llm_result and llm_result.is_bypassed:

@@ -4,6 +4,10 @@
 import os
 import shutil
 
+# ── 调试与日志配置 ─────────────────────────────────────────
+DEBUG_MODE = False               # 设置为 True 时打印传给 LLM 的上下文摘要和详细的 LLM 推理过程
+STRICT_LOGIN_CHECK = False       # 设为 False 时，只要页面存在表单即放行进入测试链，不再强依赖大模型判断是否为登录页
+
 # ── LLM 配置 ──────────────────────────────────────────────
 LLM_PROVIDER = "ollama"          # "google" | "openai" | "ollama"
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
