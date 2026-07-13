@@ -111,33 +111,25 @@ class LoginDetectorModule(BaseModule):
 
     def run(self, url: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
-        从 url 出发，通过三层架构定位登录页面。
-        返回包含登录页 URL 的标准结果字典。
+        仅负责通过外部工具进行广度发现，返回去重、预排序后的候选 URL 列表。
+        后续的 LLM 验证将交由流水线主控程序 (main.py) 并发执行。
         """
         result = self._base_result(url)
-        login_url = self._find_login_page(url)
+        candidates = self.discover_candidates(url)
 
-        if login_url:
-            result["findings"] = [{"login_page_url": login_url}]
-            result["summary"] = f"已识别到登录页面：{login_url}"
+        if candidates:
+            result["findings"] = [{"candidate_url": c} for c in candidates]
+            result["summary"] = f"发现 {len(candidates)} 个候选登录页，准备交由流水线并发验证。"
         else:
-            result["summary"] = "未能在最大深度内找到登录页面。"
+            result["summary"] = "未能在目标站点发现任何候选 URL。"
 
         return result
 
-    # ── 三层主流程 ──────────────────────────────────────────────
-
-    def _find_login_page(
-        self, start_url: str, max_depth: int = CRAWLER_MAX_DEPTH
-    ) -> Optional[str]:
+    def discover_candidates(self, start_url: str) -> List[str]:
         """
-        三层架构主流程：
-          Layer 1 → Layer 2 → (如未命中) 递归爬虫补充
+        使用 Katana/Dirsearch 获取 URL，并经过过滤和关键词预排序，返回候选列表。
+        不再进行阻塞式的 LLM 检测。
         """
-
-        # ══════════════════════════════════════════════════════
-        # Layer 1：外部工具广度发现
-        # ══════════════════════════════════════════════════════
         candidate_urls: List[str] = []
 
         if TOOL_DISCOVERY_ENABLED:
@@ -146,14 +138,8 @@ class LoginDetectorModule(BaseModule):
         else:
             print("\n  [Layer 1] TOOL_DISCOVERY_ENABLED=False，跳过外部工具。")
 
-        # 始终将起始 URL 置于列表首位
         if start_url not in candidate_urls:
             candidate_urls.insert(0, start_url)
-
-        # 若工具未发现任何额外 URL，直接进入递归爬虫模式
-        if len(candidate_urls) <= 1:
-            print("\n  [Layer 1] 外部工具无输出，直接进入递归 LLM 爬虫模式。")
-            return self._recursive_llm_crawl(start_url, max_depth)
 
         # 1. 安全加固：确保 candidate_urls 中没有缺少 scheme 的裸域名
         # 2. 跨域过滤：排除与起始域名不一致的外部链接
@@ -172,7 +158,6 @@ class LoginDetectorModule(BaseModule):
             c_parsed = urllib.parse.urlparse(c)
             c_domain = c_parsed.hostname or ""
             
-            # 如果域名存在且与主域名不同，则丢弃
             if c_domain and start_domain and c_domain != start_domain:
                 continue
                 
@@ -184,26 +169,12 @@ class LoginDetectorModule(BaseModule):
                 safe_candidates.append(c)
         candidate_urls = safe_candidates
 
-        # ══════════════════════════════════════════════════════
-        # Layer 2：关键词预排序 + LLM 精准过滤
-        # ══════════════════════════════════════════════════════
         print(f"\n{'─' * 50}")
-        print(f"  [Layer 2] LLM 过滤：共 {len(candidate_urls)} 个候选 URL")
+        print(f"  [发现完毕] 外部工具共收集到 {len(candidate_urls)} 个去重后的候选 URL")
         print(f"{'─' * 50}")
 
         prioritized = self._prioritize_urls(candidate_urls)
-
-        for url in prioritized:
-            llm_result = self._llm_check_url(url)
-            if llm_result and llm_result.is_login_page and llm_result.confidence > 0.8:
-                print(f"\n  [✅ Layer 2] 命中登录页: {url}")
-                return url
-
-        # ══════════════════════════════════════════════════════
-        # 降级补充：工具结果中未找到 → 再跑一轮递归爬虫
-        # ══════════════════════════════════════════════════════
-        print(f"\n  [Layer 2] 工具结果中未命中，启动递归 LLM 爬虫作补充（深度=2）...")
-        return self._recursive_llm_crawl(start_url, max_depth=2)
+        return prioritized
 
     # ── Layer 2 辅助：关键词预排序 ──────────────────────────────
 

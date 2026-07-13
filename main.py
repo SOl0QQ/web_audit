@@ -25,6 +25,90 @@ from web_audit.modules.sqli_detector import SQLiDetectorModule
 from web_audit.modules.upload_auditor import UploadIdentifierModule
 from web_audit.reports.reporter import Reporter
 
+from web_audit.core.logger import init_global_logger, thread_safe_logger
+
+def run_attack_chain(analysis_url: str, requester, reporter, step: str):
+    """执行 SQLi 和 文件上传的单链攻击"""
+    landing_page_url = None
+    is_authenticated = False
+    upload_id_result = None
+    import time
+    
+    if step in ["all", "sqli"]:
+        print(f"\n[Step 2/4] SQL 注入漏洞检测（目标: {analysis_url}）")
+        print("-" * 40)
+        from web_audit.modules.sqli_detector import SQLiDetectorModule
+        sqli_module = SQLiDetectorModule(requester)
+        t0 = time.time()
+        sqli_result = sqli_module.run(analysis_url)
+        sqli_result['execution_time_seconds'] = round(time.time() - t0, 2)
+        reporter.add_result(sqli_result)
+
+        for finding in sqli_result.get("findings", []):
+            if finding.get("is_bypassed"):
+                landing_page_url = finding.get("landing_page_url")
+                is_authenticated = True
+                break
+
+    upload_scan_url = landing_page_url if landing_page_url else analysis_url
+    
+    if upload_scan_url:
+        lower_url = upload_scan_url.lower()
+        if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action"]):
+            import urllib.parse
+            safe_target = analysis_url if "://" in analysis_url else "http://" + analysis_url
+            parsed_target = urllib.parse.urlparse(safe_target)
+            upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
+            print(f"  [System] 檢測到登錄著陸頁為 API/Action 端點 ({landing_page_url})，將上传掃描起點修正為: {upload_scan_url}")
+        elif "?" in upload_scan_url and "Login" in upload_scan_url:
+            import urllib.parse
+            safe_target = analysis_url if "://" in analysis_url else "http://" + analysis_url
+            parsed_target = urllib.parse.urlparse(safe_target)
+            upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
+
+    if step in ["all", "upload_id"]:
+        print(f"\n[Step 3/4] 文件上传功能识别（目标: {upload_scan_url}）")
+        print("-" * 40)
+        from web_audit.modules.upload_auditor import UploadIdentifierModule
+        upload_id_module = UploadIdentifierModule(requester)
+        t0 = time.time()
+        upload_id_result = upload_id_module.run(
+            upload_scan_url,
+            context={"is_authenticated": is_authenticated}
+        )
+        upload_id_result['execution_time_seconds'] = round(time.time() - t0, 2)
+        reporter.add_result(upload_id_result)
+
+    if step in ["all", "upload_audit", "upload_exploit"]:
+        print("\n[Step 4/4] 综合文件上传漏洞检测与验证")
+        print("-" * 40)
+        from web_audit.modules.unified_upload_auditor import UnifiedUploadAuditModule
+        unified_upload_module = UnifiedUploadAuditModule(requester)
+        
+        if upload_id_result and upload_id_result.get("findings"):
+            t0 = time.time()
+            audit_result = unified_upload_module.run(
+                upload_scan_url,
+                context={"upload_forms": upload_id_result["findings"]}
+            )
+            audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
+            reporter.add_result(audit_result)
+        elif step in ["upload_audit", "upload_exploit"]:
+            print(f"  审查端点: {analysis_url} (单独运行)")
+            t0 = time.time()
+            dummy_form = {
+                "action_url": analysis_url,
+                "file_input_names": ["file"]
+            }
+            audit_result = unified_upload_module.run(
+                analysis_url,
+                context={"upload_forms": [dummy_form]}
+            )
+            audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
+            reporter.add_result(audit_result)
+        else:
+            print("  未发现上传端点，跳过安全审查与漏洞验证。")
+
 
 def run_pipeline(target_url: str, step: str = "all"):
     """
@@ -103,109 +187,54 @@ def run_pipeline(target_url: str, step: str = "all"):
 
     reporter.target_url = target_url
 
-    # 跨模块共享状态
-    analysis_url = target_url
-    login_page_url = None
-    landing_page_url = None
-    is_authenticated = False
-    upload_id_result = None
-
     try:
-        # ── Step 1: 登录页识别 ─────────────────────────────
+        # ── Step 1: 登录页识别 (广度发现) ─────────────────────────────
+        candidates = []
+        login_module = LoginDetectorModule(requester)
+        
         if step in ["all", "login"]:
-            print("\n[Step 1/4] 登录页面识别")
+            print("\n[Step 1/4] 登录页面初步挖掘 (流式扫描启动)")
             print("-" * 40)
-            login_module = LoginDetectorModule(requester)
             t0 = time.time()
             login_result = login_module.run(target_url)
             login_result['execution_time_seconds'] = round(time.time() - t0, 2)
             reporter.add_result(login_result)
 
-            if login_result["findings"]:
-                login_page_url = login_result["findings"][0].get("login_page_url")
-            
-            analysis_url = login_page_url or target_url
+            if login_result.get("findings"):
+                candidates = [c["candidate_url"] for c in login_result["findings"]]
+        else:
+            candidates = [target_url]
 
-        # ── Step 2: SQL 注入检测 ───────────────────────────
-        if step in ["all", "sqli"]:
-            print(f"\n[Step 2/4] SQL 注入漏洞检测（目标: {analysis_url}）")
-            print("-" * 40)
-            sqli_module = SQLiDetectorModule(requester)
-            t0 = time.time()
-            sqli_result = sqli_module.run(analysis_url)
-            sqli_result['execution_time_seconds'] = round(time.time() - t0, 2)
-            reporter.add_result(sqli_result)
+        if not candidates:
+            print("  [System] 未找到任何候选登录页，流水线终止。")
+            return
 
-            for finding in sqli_result.get("findings", []):
-                if finding.get("is_bypassed"):
-                    landing_page_url = finding.get("landing_page_url")
-                    is_authenticated = True
-                    break
+        def verify_and_attack(candidate_url: str, idx: int, total: int):
+            thread_safe_logger.start_buffer()
+            try:
+                if step in ["all", "login"]:
+                    print(f"\n[{idx}/{total}] 正在使用 LLM 验证候选 URL: {candidate_url}")
+                    llm_result = login_module._llm_check_url(candidate_url)
+                    if not llm_result or not llm_result.is_login_page or llm_result.confidence <= 0.8:
+                        print(f"  [判定失败] 不是登录页，丢弃。")
+                        return
+                    print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
+                
+                run_attack_chain(candidate_url, requester, reporter, step)
+            except Exception as e:
+                print(f"  [Worker Error] 发生异常: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                thread_safe_logger.dump_buffer_to_screen(f"测试链报告: {candidate_url}")
 
-        upload_scan_url = landing_page_url if landing_page_url else analysis_url
-        
-        # 針對 AJAX/API 登入：如果著陸頁其實是後端 API (例如 checklogin.php)，爬蟲會找不到任何連結
-        # 我們將爬蟲起點強制切換回網站根目錄或原始目標網址
-        if upload_scan_url:
-            lower_url = upload_scan_url.lower()
-            if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action"]):
-                import urllib.parse
-                # Ensure we join with a slash to get the root of the target_url, or just use target_url
-                # Safe parsing: ensure target_url has scheme before parsing so netloc isn't empty
-                safe_target = target_url if "://" in target_url else "http://" + target_url
-                parsed_target = urllib.parse.urlparse(safe_target)
-                upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
-                print(f"  [System] 檢測到登錄著陸頁為 API/Action 端點 ({landing_page_url})，將上傳掃描起點修正為: {upload_scan_url}")
-            elif "?" in upload_scan_url and "Login" in upload_scan_url:
-                import urllib.parse
-                safe_target = target_url if "://" in target_url else "http://" + target_url
-                parsed_target = urllib.parse.urlparse(safe_target)
-                upload_scan_url = f"{parsed_target.scheme}://{parsed_target.netloc}/"
-
-        # ── Step 3: 文件上传功能识别 ───────────────────────
-        if step in ["all", "upload_id"]:
-            print(f"\n[Step 3/4] 文件上传功能识别（目标: {upload_scan_url}）")
-            print("-" * 40)
-            upload_id_module = UploadIdentifierModule(requester)
-            t0 = time.time()
-            upload_id_result = upload_id_module.run(
-                upload_scan_url,
-                context={"is_authenticated": is_authenticated}
-            )
-            upload_id_result['execution_time_seconds'] = round(time.time() - t0, 2)
-            reporter.add_result(upload_id_result)
-
-        # ── Step 4: 综合文件上传漏洞检测与验证 ────────
-        if step in ["all", "upload_audit", "upload_exploit"]:
-            print("\n[Step 4/4] 综合文件上传漏洞检测与验证")
-            print("-" * 40)
-            from web_audit.modules.unified_upload_auditor import UnifiedUploadAuditModule
-            unified_upload_module = UnifiedUploadAuditModule(requester)
-            
-            if upload_id_result and upload_id_result["findings"]:
-                t0 = time.time()
-                audit_result = unified_upload_module.run(
-                    upload_scan_url,
-                    context={"upload_forms": upload_id_result["findings"]}
-                )
-                audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
-                reporter.add_result(audit_result)
-            elif step in ["upload_audit", "upload_exploit"]:
-                # 单独运行时，构造一个基础的上传端点用于测试
-                print(f"  审查端点: {target_url} (单独运行)")
-                t0 = time.time()
-                dummy_form = {
-                    "action_url": target_url,
-                    "file_input_names": ["file"]
-                }
-                audit_result = unified_upload_module.run(
-                    target_url,
-                    context={"upload_forms": [dummy_form]}
-                )
-                audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
-                reporter.add_result(audit_result)
-            else:
-                print("  未发现上传端点，跳过安全审查与漏洞验证。")
+        print(f"\n[主控] 准备对 {len(candidates)} 个候选 URL 启动流式并发验证...")
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as inner_executor:
+            futures = []
+            for i, c in enumerate(candidates, 1):
+                futures.append(inner_executor.submit(verify_and_attack, c, i, len(candidates)))
+            concurrent.futures.wait(futures)
 
     finally:
         requester.close()
