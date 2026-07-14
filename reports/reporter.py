@@ -16,12 +16,19 @@ class Reporter:
     def __init__(self, target_url: str):
         self.target_url = target_url
         self.generated_at = datetime.now().isoformat()
-        self.results: List[Dict[str, Any]] = []
+        self.global_results: List[Dict[str, Any]] = []
+        self.url_results: Dict[str, List[Dict[str, Any]]] = {}
         self.total_time: float = 0.0
 
-    def add_result(self, module_result: Dict[str, Any]):
-        """添加单个模块的审计结果。"""
-        self.results.append(module_result)
+    def add_global_result(self, module_result: Dict[str, Any]):
+        """添加全局探测结果（例如初始的 URL 挖掘）。"""
+        self.global_results.append(module_result)
+
+    def add_result(self, url: str, module_result: Dict[str, Any]):
+        """添加针对特定 URL 的审计结果。"""
+        if url not in self.url_results:
+            self.url_results[url] = []
+        self.url_results[url].append(module_result)
 
     def generate(self) -> str:
         """生成并保存报告，返回报告文件路径。"""
@@ -36,7 +43,8 @@ class Reporter:
             "target": self.target_url,
             "generated_at": self.generated_at,
             "total_execution_time_seconds": round(self.total_time, 2),
-            "module_results": self.results,
+            "global_results": self.global_results,
+            "scanned_urls": self.url_results,
         }
 
         with open(filepath, "w", encoding="utf-8") as f:
@@ -57,16 +65,25 @@ class Reporter:
         if self.total_time > 0:
             print(f"  总耗时: {self.total_time:.2f} 秒")
         print("=" * 60)
-        for result in self.results:
+
+        for result in self.global_results:
             module = result.get("module", "unknown")
             summary = result.get("summary", "")
-            findings_count = len(result.get("findings", []))
-            time_spent = result.get("execution_time_seconds")
-            print(f"\n  [{module}]")
+            print(f"\n  [{module}] (全局阶段)")
             print(f"  摘要: {summary}")
-            print(f"  发现数量: {findings_count}")
-            if time_spent is not None:
-                print(f"  耗时: {time_spent} 秒")
+
+        for url, results in self.url_results.items():
+            print(f"\n  🎯 Target URL: {url}")
+            for result in results:
+                module = result.get("module", "unknown")
+                summary = result.get("summary", "")
+                findings_count = len(result.get("findings", []))
+                time_spent = result.get("execution_time_seconds")
+                print(f"    [{module}]")
+                print(f"      摘要: {summary}")
+                print(f"      发现数量: {findings_count}")
+                if time_spent is not None:
+                    print(f"      耗时: {time_spent} 秒")
         print("=" * 60)
 
     @staticmethod
@@ -79,10 +96,18 @@ class Reporter:
             f"总耗时: {report_data.get('total_execution_time_seconds', 0)} 秒",
             "-" * 60,
         ]
-        for result in report_data.get("module_results", []):
-            lines.append(f"\n模块: {result.get('module', 'N/A')}")
-            lines.append(f"URL: {result.get('url', 'N/A')}")
-            lines.append(f"耗时: {result.get('execution_time_seconds', 'N/A')} 秒")
-            lines.append(f"摘要: {result.get('summary', 'N/A')}")
-            lines.append(f"发现: {json.dumps(result.get('findings', []), ensure_ascii=False, indent=2)}")
+        if report_data.get("global_results"):
+            lines.append("\n[全局阶段探测]")
+            for result in report_data.get("global_results", []):
+                lines.append(f"模块: {result.get('module', 'N/A')}")
+                lines.append(f"摘要: {result.get('summary', 'N/A')}")
+                
+        for url, results in report_data.get("scanned_urls", {}).items():
+            lines.append(f"\n🎯 URL: {url}")
+            for result in results:
+                lines.append(f"  模块: {result.get('module', 'N/A')}")
+                lines.append(f"  耗时: {result.get('execution_time_seconds', 'N/A')} 秒")
+                lines.append(f"  摘要: {result.get('summary', 'N/A')}")
+                lines.append(f"  发现: {json.dumps(result.get('findings', []), ensure_ascii=False, indent=4)}")
+                lines.append("")
         return "\n".join(lines)

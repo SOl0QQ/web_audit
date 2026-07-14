@@ -42,7 +42,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str):
         t0 = time.time()
         sqli_result = sqli_module.run(analysis_url)
         sqli_result['execution_time_seconds'] = round(time.time() - t0, 2)
-        reporter.add_result(sqli_result)
+        reporter.add_result(analysis_url, sqli_result)
 
         for finding in sqli_result.get("findings", []):
             if finding.get("is_bypassed"):
@@ -77,7 +77,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str):
             context={"is_authenticated": is_authenticated}
         )
         upload_id_result['execution_time_seconds'] = round(time.time() - t0, 2)
-        reporter.add_result(upload_id_result)
+        reporter.add_result(analysis_url, upload_id_result)
 
     if step in ["all", "upload_audit", "upload_exploit"]:
         print("\n[Step 4/4] 综合文件上传漏洞检测与验证")
@@ -92,7 +92,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str):
                 context={"upload_forms": upload_id_result["findings"]}
             )
             audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
-            reporter.add_result(audit_result)
+            reporter.add_result(analysis_url, audit_result)
         elif step in ["upload_audit", "upload_exploit"]:
             print(f"  审查端点: {analysis_url} (单独运行)")
             t0 = time.time()
@@ -105,7 +105,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str):
                 context={"upload_forms": [dummy_form]}
             )
             audit_result['execution_time_seconds'] = round(time.time() - t0, 2)
-            reporter.add_result(audit_result)
+            reporter.add_result(analysis_url, audit_result)
         else:
             print("  未发现上传端点，跳过安全审查与漏洞验证。")
 
@@ -198,7 +198,7 @@ def run_pipeline(target_url: str, step: str = "all"):
             t0 = time.time()
             login_result = login_module.run(target_url)
             login_result['execution_time_seconds'] = round(time.time() - t0, 2)
-            reporter.add_result(login_result)
+            reporter.add_global_result(login_result)
 
             if login_result.get("findings"):
                 candidates = [c["candidate_url"] for c in login_result["findings"]]
@@ -211,6 +211,7 @@ def run_pipeline(target_url: str, step: str = "all"):
 
         def verify_and_attack(candidate_url: str, idx: int, total: int):
             thread_safe_logger.start_buffer()
+            is_valid_target = False
             try:
                 if step in ["all", "login"]:
                     print(f"\n[{idx}/{total}] 正在使用 LLM 验证候选 URL: {candidate_url}")
@@ -220,13 +221,19 @@ def run_pipeline(target_url: str, step: str = "all"):
                         return
                     print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
                 
+                is_valid_target = True
                 run_attack_chain(candidate_url, requester, reporter, step)
             except Exception as e:
                 print(f"  [Worker Error] 发生异常: {e}")
                 import traceback
                 traceback.print_exc()
             finally:
-                thread_safe_logger.dump_buffer_to_screen(f"测试链报告: {candidate_url}")
+                from web_audit.config.settings import DEBUG_MODE
+                if is_valid_target or DEBUG_MODE:
+                    thread_safe_logger.dump_buffer_to_screen(f"测试链报告: {candidate_url}")
+                else:
+                    # 默默丢弃无效目标产生的冗余验证日志
+                    thread_safe_logger.get_buffer_and_stop()
 
         print(f"\n[主控] 准备对 {len(candidates)} 个候选 URL 启动流式并发验证...")
         import concurrent.futures
