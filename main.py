@@ -206,10 +206,14 @@ def run_pipeline(target_url: str, step: str = "all"):
             candidates = [target_url]
 
         if not candidates:
-            print("  [System] 未找到任何候选登录页，流水线终止。")
-            return
+            print("  [System] 未找到任何候选登录页。准备启动降级递归策略...")
+
+        import threading
+        valid_login_found = False
+        login_found_lock = threading.Lock()
 
         def verify_and_attack(candidate_url: str, idx: int, total: int):
+            nonlocal valid_login_found
             thread_safe_logger.start_buffer()
             is_valid_target = False
             try:
@@ -222,6 +226,9 @@ def run_pipeline(target_url: str, step: str = "all"):
                     print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
                 
                 is_valid_target = True
+                with login_found_lock:
+                    valid_login_found = True
+                    
                 run_attack_chain(candidate_url, requester, reporter, step)
             except Exception as e:
                 print(f"  [Worker Error] 发生异常: {e}")
@@ -235,13 +242,25 @@ def run_pipeline(target_url: str, step: str = "all"):
                     # 默默丢弃无效目标产生的冗余验证日志
                     thread_safe_logger.get_buffer_and_stop()
 
-        print(f"\n[主控] 准备对 {len(candidates)} 个候选 URL 启动流式并发验证...")
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as inner_executor:
-            futures = []
-            for i, c in enumerate(candidates, 1):
-                futures.append(inner_executor.submit(verify_and_attack, c, i, len(candidates)))
-            concurrent.futures.wait(futures)
+        if candidates:
+            print(f"\n[主控] 准备对 {len(candidates)} 个候选 URL 启动流式并发验证...")
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as inner_executor:
+                futures = []
+                for i, c in enumerate(candidates, 1):
+                    futures.append(inner_executor.submit(verify_and_attack, c, i, len(candidates)))
+                concurrent.futures.wait(futures)
+
+        # 降级备选：如果没有任何候选通过验证，或外部工具根本没发现候选，启动递归爬虫
+        if step in ["all", "login"] and not valid_login_found:
+            print("\n  [System] ⚠️ 外部工具提供的前期候选 URL 均未能通过验证 (或无候选)。")
+            print("  [System] 启动降级策略：使用大模型递归爬虫进行深度探索...")
+            recursive_login_url = login_module._recursive_llm_crawl(target_url)
+            if recursive_login_url:
+                print(f"\n  [✅ 确认登录页 (递归发现)] 开始为 {recursive_login_url} 执行深层攻击链!")
+                run_attack_chain(recursive_login_url, requester, reporter, step)
+            else:
+                print("  [System] 递归爬虫也未能找到登录页，流水线终止。")
 
     finally:
         requester.close()

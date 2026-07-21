@@ -141,8 +141,12 @@ AUTH_BYPASS_PROMPT = ChatPromptTemplate.from_messages([
 2. **会话标志不同**：Payload 的响应 Header 中出现了新的 `Set-Cookie`（如新的 JSESSIONID）并伴随不同的页面状态。
 3. **页面内容特征**：Payload 响应的着陆页文本中出现了 "Welcome", "Admin", "Sign Off", "Logout" 或内部账户菜单等已登录特征。
 4. **AJAX/API 成功标志**：如果页面是 AJAX 登录，Payload 响应内容由基线的 "error"、"false" 变为了 "success"、"true" 或 {{"status": "success"}} 等极其明显的成功状态词。
+
+⛔ 【极其重要的防误报（False Positive）拦截规则】：
+- **明确的失败特征（一票否决）**：如果在 Payload 响应的纯文本或 JavaScript 弹窗（alert/script）中，依然出现了诸如“用户不存在”、“密码错误”、“incorrect”、“invalid”、“fail”、“wrong”、“ไม่ถูกต้อง”（泰语错误）或任何其他语言的账号/密码错误提示词，**绝对不许判定为绕过成功！** 哪怕 HTTP 状态码是 200，这也百分之百是绕过失败！
+- **仅报错变异不代表成功**：不要仅仅因为 Payload 触发了数据库语法报错（如 SQL Syntax error）、WAF拦截页面，导致响应长度或内容与基线不同，就误判为绕过成功。必须出现确凿的**登录成功特权标志**（重定向后台、分配 Token、后台菜单）。
      
-请仔细对比基线和 Payload 的 Location、Status Code 与文本内容。只要跳转路径明显不同，或响应正文内容发生从失败到成功的本质逆转，即果断判定为绕过成功。
+请仔细对比基线和 Payload 的 Location、Status Code 与文本内容。只要符合上述成功标准且没有触犯防误报规则，才判定为绕过成功。
 
 **【重要输出规则】**
 你必须**且只能**输出一个符合规范的 JSON 字典。

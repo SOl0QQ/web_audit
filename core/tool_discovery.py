@@ -314,18 +314,36 @@ class ToolDiscovery:
         if not TOOL_DISCOVERY_ENABLED:
             return []
 
+        # 全局优化：如果传入的 URL 带有常见文件后缀（如 /index.html, /login.php）
+        # 将其退回到所在的目录层级，作为基础爬取起点。
+        # 理由：
+        # 1. 对 Katana：从 /login.php 开始爬通常爬不到什么（登录页很少有外部链接），退到目录能爬到更多隐藏入口。
+        # 2. 对 Dirsearch：避免拼接出 /index.html/admin 这种无效的 404 路径。
+        import urllib.parse
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        if path.endswith(('.html', '.htm', '.php', '.jsp', '.asp', '.aspx')):
+            path = path.rsplit('/', 1)[0] + '/'
+            if not path.startswith('/'):
+                path = '/' + path
+            base_target = urllib.parse.urlunparse(parsed._replace(path=path))
+        else:
+            base_target = url
+
         print(f"\n{'─' * 50}")
-        print(f"  [Layer 1] 外部工具 URL 发现: {url}")
+        print(f"  [Layer 1] 外部工具 URL 发现: {base_target}")
+        if base_target != url:
+            print(f"  [System] 已自动将特定文件端点退回为目录起点 (避免爆破或爬虫卡死/无链可爬)")
         print(f"{'─' * 50}")
 
         all_urls: List[str] = []
 
         # 1. katana 爬虫（跟踪链接，处理 JS 渲染）
-        katana_urls = self._katana.run(url)
+        katana_urls = self._katana.run(base_target)
         all_urls.extend(katana_urls)
 
         # 2. dirsearch 爆破（发现无链接的隐藏路径）
-        dirsearch_urls = self._dirsearch.run(url)
+        dirsearch_urls = self._dirsearch.run(base_target)
         all_urls.extend(dirsearch_urls)
 
         # 去重（保持顺序）
