@@ -40,8 +40,7 @@ def get_llm() -> BaseChatModel:
         from langchain_ollama import ChatOllama
         return ChatOllama(
             model=LLM_MODEL,
-            # base_url=OLLAMA_BASE_URL,
-            base_url="http://34.21.206.134:63690",
+            base_url=OLLAMA_BASE_URL,
             temperature=LLM_TEMPERATURE,
             format="json",  # 強制返回 JSON 格式，對於本地模型的 Pydantic structured output 至關重要
         )
