@@ -122,6 +122,10 @@ class UploadIdentifierModule(BaseModule):
                 # 但首字母页面已经解析过了，所以缓存一下
                 url_parser_map = {url: parser}
                 
+                # 新增：基于 URL 结构的签名去重，防止陷入有大量相似数据（如文章列表、用户列表分页）的爬虫陷阱
+                visited_patterns = set()
+                visited_patterns.add(self._get_url_signature(url))
+                
                 while queue and pages_crawled < UPLOAD_MAX_PAGES:
                     current_url, current_depth, parent_url = queue.popleft()
                     
@@ -151,14 +155,18 @@ class UploadIdentifierModule(BaseModule):
                         pages_crawled += 1
                         
                         # 如果没有找到，提取当前页面的安全链接加入队列，深度+1
-                        all_links = current_parser.get_all_links(limit=200)
+                        all_links = current_parser.get_all_links(limit=1000)
                         safe_links = [l for l in all_links if self._is_safe_link(l) and self._is_same_domain(url, l["url"])]
                         
                         for link in safe_links:
                             href = link["url"]
                             if href not in visited:
-                                visited.add(href)
-                                queue.append((href, current_depth + 1, current_url))
+                                # 生成结构签名，并判断是否爬过类似的结构
+                                sig = self._get_url_signature(href)
+                                if sig not in visited_patterns:
+                                    visited.add(href)
+                                    visited_patterns.add(sig)
+                                    queue.append((href, current_depth + 1, current_url))
                                 
                     except Exception as e:
                         print(f"    [Error] 探索 {current_url} 時發生例外: {e}")
@@ -336,6 +344,26 @@ class UploadIdentifierModule(BaseModule):
                 candidates.append(link)
                 
         return candidates
+
+    def _get_url_signature(self, url: str) -> str:
+        """
+        生成 URL 的结构化签名，用于去重。
+        例如：http://test.com/page?id=1&sort=asc -> http://test.com/page?id=&sort=
+        这种去重可以有效防止爬虫在长列表（如数千条用户数据页）或分页中耗尽额度。
+        """
+        import urllib.parse
+        import re
+        parsed = urllib.parse.urlparse(url)
+        query_dict = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+        # 只保留参数键，排序保证一致性
+        sorted_keys = sorted(query_dict.keys())
+        query_sig = "&".join(f"{k}=" for k in sorted_keys)
+        
+        # 针对 RESTful 风格的数字 ID (例如 /user/123/edit -> /user/{id}/edit) 做简单的正则替换
+        path = parsed.path
+        path = re.sub(r'/\d+(?=/|$)', '/{id}', path)
+        
+        return f"{parsed.netloc}{path}?{query_sig}"
 
     def _is_safe_link(self, link: Dict[str, str]) -> bool:
         """检查链接是否包含危险动作关键词，防止在已登录状态下误触发删除/修改等操作。"""
