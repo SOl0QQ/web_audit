@@ -38,10 +38,18 @@ class Requester:
         timeout: int = REQUEST_TIMEOUT,
         verify_ssl: bool = REQUEST_VERIFY_SSL,
     ):
+        import os
         self.timeout = timeout
         self.verify_ssl = verify_ssl
         self.session = requests.Session()
         self.session.headers.update(REQUEST_HEADERS)
+
+        # 允许通过环境变量 AUDIT_COOKIE 或 COOKIE 注入自定义登录 Cookie
+        env_cookie = os.getenv("AUDIT_COOKIE", "") or os.getenv("COOKIE", "")
+        if env_cookie:
+            self.session.headers["Cookie"] = env_cookie.strip()
+            print(f"[Requester] 从环境变量加载自定义 Cookie 标头: {env_cookie[:30]}...")
+
         if extra_headers:
             self.session.headers.update(extra_headers)
 

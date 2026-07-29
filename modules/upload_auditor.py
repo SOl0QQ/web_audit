@@ -63,27 +63,40 @@ class UploadIdentifierModule(BaseModule):
         if not resp:
             result["summary"] = "无法访问目标页面"
             return result
-            
+
+        # 智能判定已登录状态：如果页面 URL 没有退回到 login/signin/checklogin 页面，且响应正常，则自动视为已登录/后台可访问状态
+        resp_url_lower = resp.url.lower()
+        if not is_authenticated:
+            if not any(kw in resp_url_lower for kw in ["login", "signin", "checklogin", "log_in"]) and resp.status_code == 200:
+                is_authenticated = True
+                print(f"  [UploadIdentifier] 自动探测到目标页面处于可用/已登录状态 ({resp.url})，激活后台全面遍历。")
+
         visited.add(url)
         parser = PageParser(resp.text, url)
         forms = parser.get_upload_forms()
-        
+
+        # 如果静态 DOM 没查到上传框，尝试 Playwright 动态渲染（捕获 SPA/Vue/Dropzone 等组件）
+        if not forms:
+            rendered_html = self.requester.fetch_rendered_html(url)
+            if rendered_html and len(rendered_html) > len(resp.text):
+                rendered_parser = PageParser(rendered_html, url)
+                forms = rendered_parser.get_upload_forms()
+
         if forms:
-            print(f"      ✅ Phase 0 直接在当前目标页面发现上传点！({url})")
-        
+            print(f"      ✅ Phase 0 在目标首页发现 {len(forms)} 个上传点！({url})")
+
         for f in forms:
             f["source_url"] = url
             f["referer_url"] = None  # 根页面没有父级
         all_upload_forms.extend(forms)
-        
-        # 2. 如果首页没找到，且是已认证状态，进行后台探索 (Depth=2)
-        if not all_upload_forms and is_authenticated:
-            print("  [UploadIdentifier] 首页未发现上传点，启动安全后台探索...")
-            
-            # Phase 1: 寻找带 Upload 关键词的正向链接
+
+        # 2. 如果是已认证状态（或处于后台），启动全量深度安全探索
+        if is_authenticated or True:
+            print("  [UploadIdentifier] 启动安全后台探索，遍历收集所有页面的上传点...")
+
+            # Phase 1: 寻找带 Upload/上传 关键词的正向链接
             keyword_links = self._extract_upload_candidate_links(parser)
-            phase1_found = False
-            
+
             if keyword_links:
                 print(f"  [UploadIdentifier] Phase 1: 发现 {len(keyword_links)} 个疑似上传链接，优先探索")
                 for link in keyword_links:
@@ -91,128 +104,133 @@ class UploadIdentifierModule(BaseModule):
                     if not self._is_same_domain(url, href): continue
                     if href in visited: continue
                     visited.add(href)
-                    
+
                     print(f"    → [Phase1] 探索可疑上传页: {href} ({link['text']})")
                     sub_resp = self.requester.get(href)
                     if not sub_resp: continue
-                        
+
                     sub_parser = PageParser(sub_resp.text, href)
                     sub_forms = sub_parser.get_upload_forms()
-                    
+
+                    # 尝试 Playwright 渲染捕获动态上传框
+                    if not sub_forms:
+                        r_html = self.requester.fetch_rendered_html(href)
+                        if r_html and len(r_html) > len(sub_resp.text):
+                            sub_forms = PageParser(r_html, href).get_upload_forms()
+
                     if sub_forms:
-                        print(f"      ✅ Phase 1 发现上传点！({href})")
-                        for f in sub_forms: 
+                        print(f"      ✅ Phase 1 在 {href} 发现 {len(sub_forms)} 个上传点！")
+                        for f in sub_forms:
                             f["source_url"] = href
                             f["referer_url"] = url  # 记录是由首页点进来的
                         all_upload_forms.extend(sub_forms)
-                        phase1_found = True
-                        break
-                        
-            # Phase 2: 如果 Phase 1 没找到，启动基于 UPLOAD_MAX_DEPTH 的广度优先搜索 (BFS)
-            if not phase1_found:
-                from web_audit.config.settings import UPLOAD_MAX_DEPTH, UPLOAD_MAX_PAGES
-                print(f"  [UploadIdentifier] Phase 1 未发现，启动 Phase 2 深度安全遍历 (最大深度: {UPLOAD_MAX_DEPTH}, 最大探索页面数: {UPLOAD_MAX_PAGES})...")
-                from collections import deque
-                
-                # 队列存储元组: (当前页面URL, 当前深度, 父页面URL)
-                queue = deque([(url, 1, None)])
-                pages_crawled = 0
-                
-                # 为了在 BFS 中提取当前页面的链接，我们需要解析
-                # 但首字母页面已经解析过了，所以缓存一下
-                url_parser_map = {url: parser}
-                
-                # 新增：基于 URL 结构的签名去重，防止陷入有大量相似数据（如文章列表、用户列表分页）的爬虫陷阱
-                visited_patterns = set()
-                visited_patterns.add(self._get_url_signature(url))
-                
-                while queue and pages_crawled < UPLOAD_MAX_PAGES:
-                    current_url, current_depth, parent_url = queue.popleft()
-                    
-                    # 避免深度超过配置
-                    if current_depth > UPLOAD_MAX_DEPTH:
-                        continue
-                        
-                    try:
-                        if current_url in url_parser_map:
-                            current_parser = url_parser_map[current_url]
-                        else:
-                            print(f"    → [Phase2] (Depth:{current_depth}) 探索页面: {current_url}")
-                            resp = self.requester.get(current_url)
-                            if not resp: continue
-                            current_parser = PageParser(resp.text, current_url)
-                            
-                            # 检查当前页面本身是否有上传表单
-                            current_forms = current_parser.get_upload_forms()
-                            if current_forms:
-                                print(f"      ✅ Phase 2 在深度 {current_depth} 发现上传点！({current_url})")
-                                for f in current_forms: 
-                                    f["source_url"] = current_url
-                                    f["referer_url"] = parent_url  # 记录是由哪个父页面点击进来的
-                                all_upload_forms.extend(current_forms)
-                                break  # 找到就停止整个 BFS
-                                
-                        pages_crawled += 1
-                        
-                        # 如果没有找到，提取当前页面的安全链接加入队列，深度+1
-                        all_links = current_parser.get_all_links(limit=1000)
-                        safe_links = [l for l in all_links if self._is_safe_link(l) and self._is_same_domain(url, l["url"])]
-                        
-                        for link in safe_links:
-                            href = link["url"]
-                            if href not in visited:
-                                # 生成结构签名，并判断是否爬过类似的结构
-                                sig = self._get_url_signature(href)
-                                if sig not in visited_patterns:
-                                    visited.add(href)
-                                    visited_patterns.add(sig)
-                                    queue.append((href, current_depth + 1, current_url))
-                                
-                    except Exception as e:
-                        print(f"    [Error] 探索 {current_url} 時發生例外: {e}")
-                        import traceback
-                        traceback.print_exc()
-                        continue
-                        
-            # Phase 3: Katana 動態探索 (Headless Browser)
-            if not all_upload_forms:
-                from web_audit.config.settings import TOOL_DISCOVERY_ENABLED, KATANA_ENABLED
-                if TOOL_DISCOVERY_ENABLED and KATANA_ENABLED:
-                    print(f"  [UploadIdentifier] Phase 2 未发现，启动 Phase 3 (Katana 动态爬虫) 寻找隐藏端点...")
-                    from web_audit.core.tool_discovery import KatanaRunner
-                    katana = KatanaRunner()
-                    
-                    # 传入我们当前 Session 的 cookies 给 Katana
-                    current_cookies = self.requester.session.cookies.get_dict()
-                    katana_urls = katana.run(url, cookies=current_cookies)
-                    
-                    if katana_urls:
-                        print(f"  [UploadIdentifier] Katana 发现 {len(katana_urls)} 个 URL，开始验证...")
-                        # 过滤非同域 URL、静态资源并去重已访问的
-                        new_urls = [
-                            u for u in katana_urls 
-                            if self._is_same_domain(url, u) 
-                            and u not in visited 
-                            and not PageParser.is_static_resource(u)
-                        ]
-                        
-                        for k_url in new_urls:
-                            visited.add(k_url)
-                            try:
-                                print(f"    → [Phase3] 检查 Katana 发现的页面: {k_url}")
-                                k_resp = self.requester.get(k_url)
-                                if not k_resp: continue
-                                
-                                k_parser = PageParser(k_resp.text, k_url)
-                                if k_forms:
-                                    print(f"      ✅ Phase 3 在 Katana 发现的动态页面中找到上传点！({k_url})")
-                                    for f in k_forms: 
-                                        f["source_url"] = k_url
-                                        f["referer_url"] = url # Katana 是从起始 url 出发的
-                                    all_upload_forms.extend(k_forms)
-                                    break
-                            except Exception as e:
-                                continue
+
+            # Phase 2: 基于 UPLOAD_MAX_DEPTH 的广度优先全量搜索 (BFS)
+            from web_audit.config.settings import UPLOAD_MAX_DEPTH, UPLOAD_MAX_PAGES
+            print(f"  [UploadIdentifier] 启动 Phase 2 深度安全遍历 (最大深度: {UPLOAD_MAX_DEPTH}, 最大探索页面数: {UPLOAD_MAX_PAGES})...")
+            from collections import deque
+
+            # 队列存储元组: (当前页面URL, 当前深度, 父页面URL)
+            queue = deque([(url, 1, None)])
+            pages_crawled = 0
+
+            url_parser_map = {url: parser}
+
+            visited_patterns = set()
+            visited_patterns.add(self._get_url_signature(url))
+
+            while queue and pages_crawled < UPLOAD_MAX_PAGES:
+                current_url, current_depth, parent_url = queue.popleft()
+
+                if current_depth > UPLOAD_MAX_DEPTH:
+                    continue
+
+                try:
+                    if current_url in url_parser_map:
+                        current_parser = url_parser_map[current_url]
+                    else:
+                        print(f"    → [Phase2] (Depth:{current_depth}) 探索页面: {current_url}")
+                        resp = self.requester.get(current_url)
+                        if not resp: continue
+                        current_parser = PageParser(resp.text, current_url)
+
+                        # 检查当前页面静态与动态上传表单
+                        current_forms = current_parser.get_upload_forms()
+                        if not current_forms and any(kw in resp.text.lower() for kw in ["upload", "file", "dropzone", "webuploader", "layui", "element"]):
+                            r_html = self.requester.fetch_rendered_html(current_url)
+                            if r_html and len(r_html) > len(resp.text):
+                                current_forms = PageParser(r_html, current_url).get_upload_forms()
+
+                        if current_forms:
+                            print(f"      ✅ Phase 2 在深度 {current_depth} 页面发现 {len(current_forms)} 个上传点！({current_url})")
+                            for f in current_forms:
+                                f["source_url"] = current_url
+                                f["referer_url"] = parent_url  # 记录是由哪个父页面点击进来的
+                            all_upload_forms.extend(current_forms)
+
+                    pages_crawled += 1
+
+                    # 提取当前页面的安全链接加入队列，深度+1
+                    all_links = current_parser.get_all_links(limit=1000)
+                    safe_links = [l for l in all_links if self._is_safe_link(l) and self._is_same_domain(url, l["url"])]
+
+                    for link in safe_links:
+                        href = link["url"]
+                        if href not in visited:
+                            sig = self._get_url_signature(href)
+                            if sig not in visited_patterns:
+                                visited.add(href)
+                                visited_patterns.add(sig)
+                                queue.append((href, current_depth + 1, current_url))
+
+                except Exception as e:
+                    print(f"    [Error] 探索 {current_url} 时发生异常: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+
+            # Phase 3: Katana 动态探索 (Headless Browser)
+            from web_audit.config.settings import TOOL_DISCOVERY_ENABLED, KATANA_ENABLED
+            if TOOL_DISCOVERY_ENABLED and KATANA_ENABLED:
+                print(f"  [UploadIdentifier] 启动 Phase 3 (Katana 动态爬虫) 寻找隐藏端点...")
+                from web_audit.core.tool_discovery import KatanaRunner
+                katana = KatanaRunner()
+
+                # 传入我们当前 Session 的 cookies 给 Katana
+                current_cookies = self.requester.session.cookies.get_dict()
+                katana_urls = katana.run(url, cookies=current_cookies)
+
+                if katana_urls:
+                    print(f"  [UploadIdentifier] Katana 发现 {len(katana_urls)} 个 URL，开始验证...")
+                    new_urls = [
+                        u for u in katana_urls
+                        if self._is_same_domain(url, u)
+                        and u not in visited
+                        and not PageParser.is_static_resource(u)
+                    ]
+
+                    for k_url in new_urls:
+                        visited.add(k_url)
+                        try:
+                            print(f"    → [Phase3] 检查 Katana 发现的页面: {k_url}")
+                            k_resp = self.requester.get(k_url)
+                            if not k_resp: continue
+
+                            k_parser = PageParser(k_resp.text, k_url)
+                            k_forms = k_parser.get_upload_forms()  # 修复变量未定义 Bug
+                            if not k_forms:
+                                r_html = self.requester.fetch_rendered_html(k_url)
+                                if r_html and len(r_html) > len(k_resp.text):
+                                    k_forms = PageParser(r_html, k_url).get_upload_forms()
+
+                            if k_forms:
+                                print(f"      ✅ Phase 3 在 Katana 动态页面 {k_url} 找到 {len(k_forms)} 个上传点！")
+                                for f in k_forms:
+                                    f["source_url"] = k_url
+                                    f["referer_url"] = url  # Katana 是从起始 url 出发的
+                                all_upload_forms.extend(k_forms)
+                        except Exception as e:
+                            continue
                         
         # 4. 整理结果与去重
         if not all_upload_forms:
@@ -348,40 +366,62 @@ class UploadIdentifierModule(BaseModule):
     def _get_url_signature(self, url: str) -> str:
         """
         生成 URL 的结构化签名，用于去重。
-        例如：http://test.com/page?id=1&sort=asc -> http://test.com/page?id=&sort=
-        这种去重可以有效防止爬虫在长列表（如数千条用户数据页）或分页中耗尽额度。
+        保留路由/动作控制参数（如 act, action, mod, do 等）的值，
+        仅对数值 ID、分页参数（如 id, page, offset）进行归一化，
+        避免误将后台不同功能页面（如 act=list 与 act=add）判重跳过。
         """
         import urllib.parse
         import re
         parsed = urllib.parse.urlparse(url)
         query_dict = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
-        # 只保留参数键，排序保证一致性
-        sorted_keys = sorted(query_dict.keys())
-        query_sig = "&".join(f"{k}=" for k in sorted_keys)
-        
-        # 针对 RESTful 风格的数字 ID (例如 /user/123/edit -> /user/{id}/edit) 做简单的正则替换
+
+        # 决定页面功能的路由/动作参数（必须保留参数值）
+        ACTION_PARAMS = {
+            "act", "action", "m", "a", "c", "do", "mod", "module", "op", "operation",
+            "type", "func", "function", "controller", "view", "page_name", "cmd", "step"
+        }
+
+        sig_parts = []
+        for k in sorted(query_dict.keys()):
+            val_list = query_dict[k]
+            k_lower = k.lower()
+            if k_lower in ACTION_PARAMS:
+                v = ",".join(sorted(val_list))
+                sig_parts.append(f"{k}={v}")
+            else:
+                if k_lower in ("id", "p", "page", "offset", "limit", "timestamp", "t", "_"):
+                    sig_parts.append(f"{k}={{id}}")
+                else:
+                    norm_vals = []
+                    for v in val_list:
+                        if v.isdigit():
+                            norm_vals.append("{id}")
+                        else:
+                            norm_vals.append(v)
+                    sig_parts.append(f"{k}={','.join(sorted(set(norm_vals)))}")
+
+        query_sig = "&".join(sig_parts)
+
         path = parsed.path
         path = re.sub(r'/\d+(?=/|$)', '/{id}', path)
-        
+
         return f"{parsed.netloc}{path}?{query_sig}"
 
     def _is_safe_link(self, link: Dict[str, str]) -> bool:
         """检查链接是否包含危险动作关键词，防止在已登录状态下误触发删除/修改等操作。"""
-        # 破坏性、修改性、系统级高危操作关键词 (多国语言)
+        # 破坏性、注销类、系统级高危操作关键词 (多国语言)
         dangerous_keywords = [
             # 英文
             "delete", "remove", "drop", "clear", "empty", "truncate", "destroy",
-            "update", "edit", "modify", "change", "save",
             "reset", "install", "uninstall", "restart", "shutdown", "reboot",
             "logout", "signout", "logoff",
             # 中文
-            "删除", "清除", "清空", "修改", "编辑", "更新", "保存",
-            "重置", "安装", "重启", "设定", "登出", "退出",
-            "刪除", "編輯", "設定",
+            "删除", "清除", "清空", "重置", "安装", "卸载", "重启", "关机", "登出", "退出", "註銷",
+            "刪除",
             # 日文
-            "削除", "クリア", "変更", "更新", "保存", "リセット", "ログアウト",
+            "削除", "クリア", "リセット", "ログアウト",
             # 其他常见动作参数
-            "action=delete", "do=remove", "action=edit"
+            "action=delete", "do=remove", "act=delete", "op=delete"
         ]
         
         text = link["text"].lower()
