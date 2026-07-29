@@ -27,13 +27,17 @@ from web_audit.reports.reporter import Reporter
 
 from web_audit.core.logger import init_global_logger, thread_safe_logger
 
-def run_attack_chain(analysis_url: str, requester, reporter, step: str):
+def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_bypass_event=None):
     """执行 SQLi 和 文件上传的单链攻击"""
     landing_page_url = None
     is_authenticated = False
     upload_id_result = None
     import time
-    
+
+    if global_bypass_event and global_bypass_event.is_set():
+        print(f"  [System] ⚡ 监测到已有登录页 Bypass 成功，取消对 {analysis_url} 的后续测试。")
+        return
+
     if step in ["all", "sqli"]:
         print(f"\n[Step 2/4] SQL 注入漏洞检测（目标: {analysis_url}）")
         print("-" * 40)
@@ -48,6 +52,9 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str):
             if finding.get("is_bypassed"):
                 landing_page_url = finding.get("landing_page_url")
                 is_authenticated = True
+                if global_bypass_event:
+                    print(f"  [System] 🎯 目标 {analysis_url} 绕过成功并获得后台权限！触发表局提前终止事件，停止其他登录页的测试。")
+                    global_bypass_event.set()
                 break
 
     upload_scan_url = landing_page_url if landing_page_url else analysis_url
@@ -211,25 +218,34 @@ def run_pipeline(target_url: str, step: str = "all"):
         import threading
         valid_login_found = False
         login_found_lock = threading.Lock()
+        global_bypass_event = threading.Event()  # 全局提前终止事件
 
         def verify_and_attack(candidate_url: str, idx: int, total: int):
             nonlocal valid_login_found
+            if global_bypass_event.is_set():
+                print(f"\n[{idx}/{total}] ⚡ 监测到已有登录页 Bypass 成功，取消对 {candidate_url} 的测试。")
+                return
+
             thread_safe_logger.start_buffer()
             is_valid_target = False
             try:
                 if step in ["all", "login"]:
                     print(f"\n[{idx}/{total}] 正在使用 LLM 验证候选 URL: {candidate_url}")
                     llm_result = login_module._llm_check_url(candidate_url)
+                    if global_bypass_event.is_set():
+                        print(f"  [系统拦截] 已有其他页面 Bypass 成功，提前退出当前任务。")
+                        return
+
                     if not llm_result or not llm_result.is_login_page or llm_result.confidence <= 0.8:
                         print(f"  [判定失败] 不是登录页，丢弃。")
                         return
                     print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
-                
+
                 is_valid_target = True
                 with login_found_lock:
                     valid_login_found = True
-                    
-                run_attack_chain(candidate_url, requester, reporter, step)
+
+                run_attack_chain(candidate_url, requester, reporter, step, global_bypass_event=global_bypass_event)
             except Exception as e:
                 print(f"  [Worker Error] 发生异常: {e}")
                 import traceback
@@ -251,14 +267,14 @@ def run_pipeline(target_url: str, step: str = "all"):
                     futures.append(inner_executor.submit(verify_and_attack, c, i, len(candidates)))
                 concurrent.futures.wait(futures)
 
-        # 降级备选：如果没有任何候选通过验证，或外部工具根本没发现候选，启动递归爬虫
-        if step in ["all", "login"] and not valid_login_found:
+        # 降级备选：如果没有任何候选通过验证，或外部工具根本没发现候选，且尚未 Bypass 成功，启动递归爬虫
+        if step in ["all", "login"] and not valid_login_found and not global_bypass_event.is_set():
             print("\n  [System] ⚠️ 外部工具提供的前期候选 URL 均未能通过验证 (或无候选)。")
             print("  [System] 启动降级策略：使用大模型递归爬虫进行深度探索...")
             recursive_login_url = login_module._recursive_llm_crawl(target_url)
-            if recursive_login_url:
+            if recursive_login_url and not global_bypass_event.is_set():
                 print(f"\n  [✅ 确认登录页 (递归发现)] 开始为 {recursive_login_url} 执行深层攻击链!")
-                run_attack_chain(recursive_login_url, requester, reporter, step)
+                run_attack_chain(recursive_login_url, requester, reporter, step, global_bypass_event=global_bypass_event)
             else:
                 print("  [System] 递归爬虫也未能找到登录页，流水线终止。")
 
