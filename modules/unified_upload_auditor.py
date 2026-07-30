@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 
 from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
-from web_audit.core.llm_factory import get_structured_llm
+from web_audit.core.llm_factory import get_structured_llm, get_llm
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
