@@ -267,7 +267,7 @@ class UnifiedUploadAuditModule(BaseModule):
                             if '?' not in net_lower:
                                 score += 3
                             # 原始文件名的任何部分可能仍在（重命名可能截断 UUID 但不一定完全消失）
-                            original_parts = set(original_filename.replace(".", "_").split("_"))
+                            original_parts = set(filename.replace(".", "_").split("_"))
                             if any(p in net_lower for p in original_parts if len(p) >= 3):
                                 score += 15
 
@@ -433,14 +433,53 @@ class UnifiedUploadAuditModule(BaseModule):
     def _extract_path_via_dom_diff(self, new_links_set: set, baseline_links: Set[str],
                                     original_filename: str, resp: Any) -> Optional[str]:
         """
-        从新增链接列表中找上传文件路径——专门处理服务器重命名场景。
+        从新增链接和上传响应 JSON 中提取文件路径。
 
         策略优先级:
         1. 上传目录 + 可执行扩展名（轻量启发式，最快）
         2. UUID 前缀非严格匹配（容忍部分匹配，应对重命名截断）
+        3. 图像混合扩展名（如 shell.jpg.php）
+        4. 宽松兜底（任何上传目录中的可执行文件）
         """
         if not new_links_set:
             return None
+
+        # ── 策略 0: 从上传响应 JSON / 文本中提取文件路径 ──
+        # 服务端可能返回 JSON: {"success":true,"url":"/uploads/xxx.php"}
+        # 或 {"data":{"filename":"xxx.php"},"path":"/uploads/..."}
+        json_text = resp.text if hasattr(resp, 'text') else ''
+        if len(json_text) > 5 and ('{' in json_text or '[' in json_text):
+            try:
+                import json
+                parsed = json.loads(json_text)
+                found_urls = self._extract_urls_from_json(parsed)
+                for url in found_urls:
+                    # 排除 CDN / JS / Vendor 等静态资源
+                    if ("/" in url or "." in url) and not any(
+                        kw in url.lower() for kw in ["jquery", "bootstrap", "sweetalert", "datatables",
+                        "vendor/", "cdn", "jsdelivr", "/js/", "/images/", "/css/"]
+                    ):
+                        # 验证包含可执行文件扩展名
+                        base_name = url.split('?')[0].rsplit('/', 1)[-1]
+                        shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5',
+                                      '.phar', '.jsp', '.jspx', '.shtml', '.asp', '.aspx']
+                        if any(base_name.lower().endswith(ext) for ext in shell_exts) or '.' in base_name:
+                            print(f"      [DomDiff JSON] 从响应体提取文件路径: {url}")
+                            return url
+            except (json.JSONDecodeError, ValueError):
+                pass
+            # JSON 解析失败 → 尝试正则匹配
+            import re
+            json_paths = re.findall(
+                r'(?:url|path|filepath|file_url|source|src|link)\s*[:=]\s*["\x27]([^"\x27]+\.[a-z]+)["\x27]',
+                json_text, re.IGNORECASE
+            )
+            for jp in json_paths:
+                if any(ud in jp.lower() for ud in ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/']) or any(
+                    jp.lower().endswith(ext) for ext in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
+                ):
+                    print(f"      [DomDiff JSON Regex] 从响应正文提取路径: {jp}")
+                    return jp
 
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar',
                             '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
@@ -667,3 +706,21 @@ class UnifiedUploadAuditModule(BaseModule):
         except Exception:
             pass
         return form_data
+
+    def _extract_urls_from_json(self, obj: Any, depth: int = 0) -> List[str]:
+        """
+        递归提取 JSON 对象中所有类 URL 的字符串。
+        """
+        if depth > 10:
+            return []
+        urls: List[str] = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, str) and ('/' in v or 'http' in v.lower()):
+                    urls.append(v)
+                else:
+                    urls.extend(self._extract_urls_from_json(v, depth + 1))
+        elif isinstance(obj, list):
+            for item in obj:
+                urls.extend(self._extract_urls_from_json(item, depth + 1))
+        return urls

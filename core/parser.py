@@ -251,7 +251,7 @@ class PageParser:
                 inp["type"].lower() == "file" for inp in form["inputs"]
             )
             is_multipart = "multipart" in form.get("enctype", "").lower()
-            if has_file_input or is_multipart:
+            if has_file_input:
                 upload_forms.append(form)
         return upload_forms
 

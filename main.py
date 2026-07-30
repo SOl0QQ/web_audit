@@ -61,7 +61,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_b
     
     if upload_scan_url:
         lower_url = upload_scan_url.lower()
-        if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action"]):
+        if any(kw in lower_url for kw in ["checklogin", "ajax", "api", "login.php", "login_action", "login/", "login?", "login="]):
             import urllib.parse
             safe_target = analysis_url if "://" in analysis_url else "http://" + analysis_url
             parsed_target = urllib.parse.urlparse(safe_target)

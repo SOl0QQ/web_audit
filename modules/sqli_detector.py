@@ -621,6 +621,20 @@ class SQLiDetectorModule(BaseModule):
             if landing_url and not landing_url.startswith("http"):
                 landing_url = urllib.parse.urljoin(url, landing_url)
 
+            # Normalize internal IP redirect to use target domain
+            if landing_url:
+                try:
+                    import ipaddress
+                    landing_netloc = urllib.parse.urlparse(landing_url).netloc.split(":")[0]
+                    landing_ip = ipaddress.ip_address(landing_netloc)
+                    if landing_ip.is_private or landing_ip.is_reserved:
+                        # Replace internal IP with original target's domain
+                        target_netloc = urllib.parse.urlparse(url).netloc
+                        landing_url = landing_url.replace(landing_netloc, landing_url.split(target_netloc)[0] + target_netloc)
+                except (ValueError, ipaddress.AddressValueError, IndexError):
+                    # Not a valid IP (e.g. hostname) — leave unchanged
+                    pass
+
             return {
                 "parameter": target_param,
                 "payload": probe,
