@@ -183,7 +183,7 @@ class UnifiedUploadAuditModule(BaseModule):
             )
             print(f"  [StrategyAgent] LLM 成功生成 {len(strategies)} 组针对性绕过策略。")
 
-            # 准备多页面观察池（用于 DOM 差异对比寻址）
+            # 收集 baseline DOM 链接（用于上传 POST 后的差异对比）
             observation_pages = self._build_observation_pages(source_page, url, action_url, form)
             baseline_links = self._collect_baseline_links(observation_pages)
 
@@ -212,7 +212,7 @@ class UnifiedUploadAuditModule(BaseModule):
                     continue
 
                 # ── 尝试寻找 Webshell 真实路径 ────────────────────────
-                path = self._extract_webshell_path(resp, filename, baseline_links, observation_pages, strat_name)
+                path = self._extract_webshell_path(resp, filename, baseline_links, action_url, strat_name)
 
                 if not path:
                     print(f"      [-] 均未能定位上传文件路径，进行下一次策略迭代。")
@@ -250,23 +250,45 @@ class UnifiedUploadAuditModule(BaseModule):
                     if diag_result.status == "PATH_404" and form.get("referer_url"):
                         print(f"      [↺ 纠错重试] 尝试触发 Playwright 网络层拦截...")
                         net_urls = self.requester.fetch_network_resources(form.get("referer_url"))
+
+                        # 评分匹配替代原 `filename.split("_")[0]` 前缀匹配 —— 处理重命名场景
+                        best_retry, best_retry_score = None, -1
+                        shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
+                        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/', '/avatar/']
+
                         for net_u in net_urls:
-                            if filename.split("_")[0] in net_u or any(ext in net_u.lower() for ext in ['.php', '.phtml', '.php5', '.phar']):
-                                retry_url = net_u
-                                print(f"      [↺ 纠错重试] 发现网络层新路径，二次验证: {retry_url}")
-                                retry_diag = self._verify_and_diagnose(retry_url, filename)
-                                if retry_diag and (retry_diag.is_vuln or retry_diag.status == "SUCCESS"):
-                                    print(f"\n    🚨🚨 [AGENT 自动纠错成功] 通过网络层捕获成功定位并解析 Webshell！🚨🚨")
-                                    result["findings"].append({
-                                        "url": action_url,
-                                        "strategy": strat_name + " (Self-Correction via Network)",
-                                        "payload_file": filename,
-                                        "shell_path": retry_url,
-                                        "rce_output": retry_diag.explanation,
-                                        "severity": "Critical"
-                                    })
-                                    form_vulnerable = True
-                                    break
+                            score = 0
+                            net_lower = net_u.lower()
+
+                            if any(ud in net_lower for ud in upload_dirs):
+                                score += 10
+                            if any(ext in net_lower for ext in shell_extensions):
+                                score += 10
+                            if '?' not in net_lower:
+                                score += 3
+                            # 原始文件名的任何部分可能仍在（重命名可能截断 UUID 但不一定完全消失）
+                            original_parts = set(original_filename.replace(".", "_").split("_"))
+                            if any(p in net_lower for p in original_parts if len(p) >= 3):
+                                score += 15
+
+                            if score > best_retry_score:
+                                best_retry_score, best_retry = score, net_u
+
+                        if best_retry and best_retry_score >= 15:
+                            print(f"      [↺ 纠错重试] 发现网络层新路径: {best_retry} (score={best_retry_score})")
+                            retry_diag = self._verify_and_diagnose(best_retry, filename)
+                            if retry_diag and (retry_diag.is_vuln or retry_diag.status == "SUCCESS"):
+                                print(f"\n    🚨🚨 [AGENT 自动纠错成功] 通过网络层捕获成功定位并解析 Webshell！🚨🚨")
+                                result["findings"].append({
+                                    "url": action_url,
+                                    "strategy": strat_name + " (Self-Correction via Network)",
+                                    "payload_file": filename,
+                                    "shell_path": best_retry,
+                                    "rce_output": retry_diag.explanation,
+                                    "severity": "Critical"
+                                })
+                                form_vulnerable = True
+                                break
 
         result["summary"] = f"LLM 上传漏洞测试完成。发现高危 Webshell/RCE 漏洞: {len(result['findings'])} 个。"
         return result
@@ -299,8 +321,56 @@ class UnifiedUploadAuditModule(BaseModule):
             BypassStrategyItem(name="Double Extension", filename_suffix=".jpg.php", content_type="image/jpeg", rationale="双重后缀绕过"),
         ]
 
-    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], observation_pages: List[str], strat_name: str) -> Optional[str]:
-        """组合 LLM 响应分析、DOM 差异对比与兜底正则提取真实路径。"""
+    def _get_post_upload_target_url(self, resp: Any, action_url: str) -> List[str]:
+        """
+        返回上传 POST 后需要重新渲染抓取 DOM 的候选 URL 列表。
+
+        优先级（最可能包含新 img/src 文件的顺序）：
+          1. resp.url        — POST-Redirect-GET 的最终着陆页
+          2. resp.request.url — 原始 POST 目标（可能先渲染新链接后重定向）
+          3. resp.history...  — 多跳重定向中的中间页
+          4. action_url       — 上传表单页自身（最直接的上传后渲染位置）
+        """
+        candidates: List[str] = []
+
+        # 1. 最终着陆页
+        if resp.url:
+            candidates.append(resp.url)
+
+        # 2. requests 通过 resp.request 保留原始 POST 目标 URL
+        if getattr(resp, "request", None) and resp.request.url:
+            req_url = resp.request.url
+            if req_url != resp.url and req_url not in candidates:
+                candidates.append(req_url)
+
+        # 3. 跳转链中所有中间页
+        for h in (resp.history or []):
+            if h.url and h.url not in candidates:
+                candidates.append(h.url)
+
+        # 4. 上传端点兜底
+        if action_url and action_url not in candidates:
+            candidates.append(action_url)
+
+        # 按优先级排序：resp.url 第一，action_url 第二，其余追加
+        ordered: List[str] = []
+        for c in [resp.url, action_url]:
+            if c and c in candidates:
+                ordered.append(c)
+        for c in candidates:
+            if c not in ordered:
+                ordered.append(c)
+
+        return ordered[:4]  # 最多 4 个目标，保持速度
+
+    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str) -> Optional[str]:
+        """
+        组合 LLM 响应分析、DOM 差异对比与兜底正则提取真实路径。
+
+        DOM Diff 核心修复：不再只刷新 upload 前已知的 observation_pages，
+        而是通过 _get_post_upload_target_url 确定 POST 后的目标页面，
+        重新渲染后抓取新 DOM（含新渲染的 <img src="..."> 等文件链接）。
+        """
         path = None
 
         # 1. LLM 从上传响应中寻找路径
@@ -319,21 +389,27 @@ class UnifiedUploadAuditModule(BaseModule):
             except Exception as e:
                 pass
 
-        # 2. 智能多页面 DOM 差异对比 (寻找上传后新增的资源链接)
+        # 2. 上传后重新渲染目标页面，抓取新 DOM 做差异对比
         time.sleep(0.3)
-        after_links = set()
-        if resp.url and resp.url not in observation_pages:
-            observation_pages.append(resp.url)
+        post_targets = self._get_post_upload_target_url(resp, action_url)
+        after_links: set = set()
 
-        for obs_page in observation_pages:
+        for target in post_targets:
             try:
-                html_text = self.requester.fetch_rendered_html(obs_page)
+                html_text = self.requester.fetch_rendered_html(target)
                 if html_text:
                     after_links.update(self._extract_all_links(html_text))
             except Exception:
                 pass
 
-        path = self._find_best_shell_path(baseline_links, after_links, filename)
+        new_links_set = after_links - baseline_links
+
+        # 2a. 新路径提取: 启发式 + UUID 部分匹配（处理服务器重命名场景）
+        path = self._extract_path_via_dom_diff(new_links_set, baseline_links, filename, resp)
+
+        # 2b. 评分排序兜底（UUID 前缀存在时有效）
+        if not path:
+            path = self._find_best_shell_path(baseline_links, after_links, filename)
         if not path:
             path = self._find_fallback_shell_path(baseline_links, after_links, strat_name)
 
@@ -341,7 +417,7 @@ class UnifiedUploadAuditModule(BaseModule):
             print(f"      [DOM Diff] 通过多页对比捕捉到新增资源: {path}")
             return path
 
-        # 3. 正则兜底扫描
+        # 3. 正则兜底扫描（在上传响应原文中查找文件名）
         try:
             core_name = filename.split("_")[0]
             match = re.search(r'[\'"]([^\'"]*' + re.escape(core_name) + r'[^\'"]*)[\'"]', resp.text)
@@ -351,6 +427,69 @@ class UnifiedUploadAuditModule(BaseModule):
                 return path
         except Exception:
             pass
+
+        return None
+
+    def _extract_path_via_dom_diff(self, new_links_set: set, baseline_links: Set[str],
+                                    original_filename: str, resp: Any) -> Optional[str]:
+        """
+        从新增链接列表中找上传文件路径——专门处理服务器重命名场景。
+
+        策略优先级:
+        1. 上传目录 + 可执行扩展名（轻量启发式，最快）
+        2. UUID 前缀非严格匹配（容忍部分匹配，应对重命名截断）
+        """
+        if not new_links_set:
+            return None
+
+        shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar',
+                            '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
+        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/',
+                       '/images/', '/avatar/', '/attachments/', '/user_files/',
+                       '/data/', '/storage/']
+        image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+
+        # ── 策略 1: 上传目录 + 可执行扩展名（强信号） ──
+        for link in sorted(new_links_set):
+            if any(ud in link.lower() for ud in upload_dirs) and any(ext in link.lower() for ext in shell_extensions):
+                print(f"      [DomDiff Heuristic] 上传目录+可执行扩展名: {link}")
+                return link
+
+        # ── 策略 2: 图像混合扩展名在上传目录中 (.jpg.php .png.php) ──
+        for link in sorted(new_links_set):
+            if any(ud in link.lower() for ud in upload_dirs):
+                base_name = link.split('?')[0].split('/')[-1]
+                # 检查是否有 图片扩展名 + 可执行扩展名的混合后缀
+                if any(ext in base_name.lower() for ext in image_exts):
+                    # 提取最后一个点号之后的扩展名
+                    last_ext = '.' + base_name.split('.')[-1]
+                    if any(last_ext in ext for ext in shell_extensions):
+                        print(f"      [DomDiff Heuristic] 图像混合扩展名: {link}")
+                        return link
+
+        # ── 策略 3: UUID 前缀部分匹配（容忍重命名截断） ──
+        # 原文件名 split("_")[0] 是 UUID，重命名后可能被去掉或替换。
+        # 尝试: 新文件名包含原 UUID 的部分字符 + 时间戳特征（长数字串）
+        uuid_prefix = original_filename.split("_")[0] if "_" in original_filename else ""
+        if uuid_prefix and len(uuid_prefix) >= 4:
+            for link in sorted(new_links_set):
+                # 部分匹配: UUID 前缀的前半部分
+                partial = uuid_prefix[:4]
+                has_partial = partial in link.lower()
+                # 或者新路径包含时间戳特征（连续 8+ 位数字）
+                import re
+                has_timestamp = bool(re.search(r'\d{8,}', link))
+                has_shell_ext = any(ext in link.lower() for ext in shell_extensions)
+                if (has_partial or has_timestamp) and has_shell_ext:
+                    print(f"      [DomDiff Heuristic] 后缀/时间戳部分匹配: {link} (partial={partial} ts={has_timestamp})")
+                    return link
+
+        # ── 策略 4: 任何在上传目录中的可执行扩展名文件（宽松兜底） ──
+        for link in sorted(new_links_set):
+            if any(ud in link.lower() for ud in upload_dirs):
+                if any(ext in link.lower() for ext in shell_extensions):
+                    print(f"      [DomDiff Fallback] 上传目录可执行文件: {link}")
+                    return link
 
         return None
 
@@ -405,34 +544,86 @@ class UnifiedUploadAuditModule(BaseModule):
         return links
 
     def _find_best_shell_path(self, before_links: Set[str], after_links: Set[str], original_filename: str) -> Optional[str]:
-        """评分对比寻找最佳 Webshell 路径。"""
+        """
+        评分对比寻找最佳 Webshell 路径 —— 支持服务器重命名场景。
+
+        评分标准（最高分胜出）:
+          - 上传目录: +10
+          - 可执行扩展名: +10
+          - 图像混合扩展名 (.jpg.php / .png.php): +10
+          - 路径层级 ≤ 4: +5
+          - 无查询字符串: +3
+          - UUID 前缀匹配（未重命名场景）: +20
+
+        重命名时: upload_dir(10) + shell_ext(10) = 20 分
+        足以高于只有单一扩展名的误报 (10 分)。
+        """
         new_links = after_links - before_links
-        if not new_links: return None
+        if not new_links:
+            return None
+
         best_path, max_score = None, -1
-        shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.inc']
-        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/', '/avatar/']
+        shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.inc',
+                            '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
+        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/',
+                       '/avatar/', '/attachments/', '/user_files/', '/data/', '/storage/']
+        image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+
+        uuid_prefix = original_filename.split("_")[0] if "_" in original_filename else ""
+
         for link in new_links:
             score = 0
-            if original_filename.split("_")[0] in link: score += 10
-            if any(ext in link.lower() for ext in shell_extensions): score += 5
-            if any(ud in link.lower() for ud in upload_dirs): score += 3
+            link_lower = link.lower()
+
+            if any(ud in link_lower for ud in upload_dirs):
+                score += 10
+            if any(ext in link_lower for ext in shell_extensions):
+                score += 10
+            # 图像混合扩展名（如 shell.jpg.php），配合绕过测试
+            if '.' in link:
+                base_name = link.split('?')[0].split('/')[-1]
+                if any(ext in base_name.lower() for ext in image_exts):
+                    score += 10
+            # 短路径更可能是直接上传（非深层 CMS 路径）
+            if link.count('/') <= 4:
+                score += 5
+            # 无查询字符串通常表示磁盘上的静态文件
+            if '?' not in link:
+                score += 3
+            # UUID 前缀未丢失时额外 +20
+            if uuid_prefix and uuid_prefix in link:
+                score += 20
+
             if score > max_score:
                 max_score, best_path = score, link
+
         return best_path if max_score > 0 else None
 
-    def _find_fallback_shell_path(self, before_links: Set[str], after_links: Set[str], strat_name: str) -> Optional[str]:
-        """宽松兜底对比寻找可疑新增链接。"""
+    def _find_fallback_shell_path(self, before_links: Set[str], after_links: Set[str],
+                                   strat_name: str, _min_score: int = 10) -> Optional[str]:
+        """
+        宽松兜底：评分排序替代无序 set 的 first-match-wins。
+        需要至少一个强信号（上传目录 OR 扩展名）才返回。
+        """
         new_links = after_links - before_links
-        if not new_links: return None
+        if not new_links:
+            return None
+
+        best_path, max_score = None, -1
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
         upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']
+
         for link in new_links:
-            if any(ext in link.lower() for ext in shell_extensions):
-                return link
-        for link in new_links:
-            if any(ud in link.lower() for ud in upload_dirs):
-                return link
-        return None
+            score = 0
+            link_lower = link.lower()
+            if any(ud in link_lower for ud in upload_dirs):
+                score += 5
+            if any(ext in link_lower for ext in shell_extensions):
+                score += 5
+            if score > max_score:
+                max_score, best_path = score, link
+
+        return best_path if max_score >= _min_score else None
 
     def _build_observation_pages(self, source_page: str, url: str, action_url: str, form: Dict[str, Any]) -> List[str]:
         """构建观察页面池。"""
