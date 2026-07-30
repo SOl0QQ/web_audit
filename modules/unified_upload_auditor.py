@@ -150,7 +150,7 @@ class UnifiedUploadAuditModule(BaseModule):
         # 绑定结构化 LLM Chains
         self._strategy_chain = STRATEGY_GEN_PROMPT | get_structured_llm(StrategyGenerationResult)
         self._path_chain = PATH_EXTRACT_PROMPT | get_structured_llm(ExtractPathResult)
-        self._diagnostic_chain = DIAGNOSTIC_PROMPT | get_structured_llm(DiagnosticResult)
+        self._diag_chain = DIAGNOSTIC_PROMPT | get_llm().with_structured_output(DiagnosticResult, method="json_mode")
 
         # PHP 无害探针标记
         self.webshell_content = b"<?php echo 'VULN_VERIFIED_MARKER_UPLOAD'; ?>"
@@ -254,7 +254,7 @@ class UnifiedUploadAuditModule(BaseModule):
                         # 评分匹配替代原 `filename.split("_")[0]` 前缀匹配 —— 处理重命名场景
                         best_retry, best_retry_score = None, -1
                         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
-                        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/', '/avatar/']
+                        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']
 
                         for net_u in net_urls:
                             score = 0
@@ -475,7 +475,7 @@ class UnifiedUploadAuditModule(BaseModule):
                 json_text, re.IGNORECASE
             )
             for jp in json_paths:
-                if any(ud in jp.lower() for ud in ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/']) or any(
+                if any(ud in jp.lower() for ud in ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']) or any(
                     jp.lower().endswith(ext) for ext in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
                 ):
                     print(f"      [DomDiff JSON Regex] 从响应正文提取路径: {jp}")
@@ -484,7 +484,7 @@ class UnifiedUploadAuditModule(BaseModule):
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar',
                             '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
         upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/',
-                       '/images/', '/avatar/', '/attachments/', '/user_files/',
+                       '/attachments/', '/user_files/',
                        '/data/', '/storage/']
         image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 
@@ -545,7 +545,7 @@ class UnifiedUploadAuditModule(BaseModule):
                 )
 
             # 调用 Diagnostic Agent 进行语义诊断
-            diag_res: DiagnosticResult = self._diagnostic_chain.invoke({
+            diag_res: DiagnosticResult = self._diag_chain.invoke({
                 "filename": filename,
                 "webshell_url": webshell_url,
                 "status_code": resp.status_code,
@@ -604,8 +604,8 @@ class UnifiedUploadAuditModule(BaseModule):
         best_path, max_score = None, -1
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.inc',
                             '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
-        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/images/',
-                       '/avatar/', '/attachments/', '/user_files/', '/data/', '/storage/']
+        upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/',
+                       '/attachments/', '/user_files/', '/data/', '/storage/']
         image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 
         uuid_prefix = original_filename.split("_")[0] if "_" in original_filename else ""
