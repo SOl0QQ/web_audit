@@ -16,7 +16,7 @@ LLM_TEMPERATURE = 0.0
 OLLAMA_BASE_URL = "http://192.168.1.52:1234"
 
 # ── HTTP 请求配置 ──────────────────────────────────────────
-REQUEST_TIMEOUT = 30             # 请求超时秒数
+REQUEST_TIMEOUT = 60            # 请求超时秒数
 REQUEST_VERIFY_SSL = False       # 渗透测试环境常关闭 SSL 校验
 REQUEST_HEADERS = {
     "User-Agent": (

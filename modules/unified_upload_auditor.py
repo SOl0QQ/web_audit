@@ -212,7 +212,12 @@ class UnifiedUploadAuditModule(BaseModule):
                     continue
 
                 # ── 尝试寻找 Webshell 真实路径 ────────────────────────
-                path = self._extract_webshell_path(resp, filename, baseline_links, action_url, strat_name, "", source_page)
+                path = self._extract_webshell_path(
+                    resp, filename, baseline_links, action_url, strat_name, "", source_page,
+                    # 传入 observation_pages：上传阶段已发现的所有后台页面，
+                    # 作为"已知可能展示上传文件的页面"进行扫描
+                    observation_pages
+                )
 
                 if not path:
                     print(f"      [-] 均未能定位上传文件路径，进行下一次策略迭代。")
@@ -363,13 +368,15 @@ class UnifiedUploadAuditModule(BaseModule):
 
         return ordered[:4]  # 最多 4 个目标，保持速度
 
-    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str, original_filename: str = "", source_page: str = "") -> Optional[str]:
+    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str, original_filename: str = "", source_page: str = "", observation_pages: List[str] = None) -> Optional[str]:
         """
         组合 LLM 响应分析、DOM 差异对比与兜底正则提取真实路径。
 
-        DOM Diff 核心修复：不再只刷新 upload 前已知的 observation_pages，
-        而是通过 _get_post_upload_target_url 确定 POST 后的目标页面，
-        重新渲染后抓取新 DOM（含新渲染的 <img src="..."> 等文件链接）。
+        搜索范围按优先级递增：
+        1. 上传响应 JSON
+        2. 上传接口返回页面 / 上传表单页
+        3. 已知页面列表（文件管理、产品列表等可能展示上传文件的页面）
+        4. 正则兜底
         """
         path = None
 
@@ -420,7 +427,7 @@ class UnifiedUploadAuditModule(BaseModule):
             print(f"      [DOM Diff] 通过多页对比捕捉到新增资源: {path}")
             return path
 
-        # 3. 正则兜底扫描（在上传响应原文中查找文件名）
+        # 4. 正则兜底扫描（在上传响应原文中查找文件名）
         try:
             core_name = filename.split("_")[0]
             match = re.search(r'[\'"]([^\'"]*' + re.escape(core_name) + r'[^\'"]*)[\'"]', resp.text)
@@ -430,6 +437,62 @@ class UnifiedUploadAuditModule(BaseModule):
                 return path
         except Exception:
             pass
+
+        # 5. 扫描已知页面列表（observation_pages）寻找上传文件
+        # 很多 CMS 上传后文件会显示在后台页面（文件管理器、产品列表等），
+        # 而不在上传接口或表单页的响应中。
+        if observation_pages:
+            print(f"      [已知页面扫描] 扫描 {len(observation_pages)} 个已知页面查找上传文件...")
+            shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+            upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']
+            ignore_kw = ["jquery", "bootstrap", "sweetalert", "datatables", "vendor/", "cdn", "jsdelivr", "/js/", "/images/", "/css/"]
+
+            for page_url in observation_pages:
+                if not page_url or page_url == source_page or page_url == action_url:
+                    continue  # 已扫过
+                try:
+                    page_html = self.requester.fetch_rendered_html(page_url)
+                    if not page_html:
+                        continue
+                    page_links = self._extract_all_links(page_html)
+                    for link in page_links:
+                        if any(kw in link.lower() for kw in ignore_kw):
+                            continue
+                        if any(ud in link.lower() for ud in upload_dirs) and any(
+                            ext in link.lower() for ext in shell_exts
+                        ):
+                            # 如果文件名包含 UUID 前缀则优先返回
+                            base_name = link.split('?')[0].rsplit('/', 1)[-1].lower()
+                            if original_filename and original_filename.split('_')[0].lower() in base_name:
+                                print(f"      [已知页面扫描] 命中 UUID 前缀匹配: {link}")
+                                return link
+                            # 否则返回第一个上传目录中的可执行文件（大概率就是上传的文件）
+                            print(f"      [已知页面扫描] 找到可执行文件: {link}")
+                            if original_filename.split('_')[0].lower() not in base_name:
+                                continue  # 不是目标文件，继续
+                            return link
+                except Exception:
+                    continue
+
+            # 5b. 如果 UUID 前缀匹配失败，返回上传目录 + 可执行扩展名的第一个结果
+            for page_url in observation_pages:
+                if not page_url or page_url == source_page or page_url == action_url:
+                    continue
+                try:
+                    page_html = self.requester.fetch_rendered_html(page_url)
+                    if not page_html:
+                        continue
+                    page_links = self._extract_all_links(page_html)
+                    for link in page_links:
+                        if any(kw in link.lower() for kw in ignore_kw):
+                            continue
+                        if any(ud in link.lower() for ud in upload_dirs):
+                            exts_to_check = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+                            if any(ext in link.lower() for ext in exts_to_check):
+                                print(f"      [已知页面扫描 5b] 找到上传目录可执行文件: {link}")
+                                return link
+                except Exception:
+                    continue
 
         return None
 
