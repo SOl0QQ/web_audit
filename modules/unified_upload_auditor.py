@@ -212,7 +212,7 @@ class UnifiedUploadAuditModule(BaseModule):
                     continue
 
                 # ── 尝试寻找 Webshell 真实路径 ────────────────────────
-                path = self._extract_webshell_path(resp, filename, baseline_links, action_url, strat_name)
+                path = self._extract_webshell_path(resp, filename, baseline_links, action_url, strat_name, "", source_page)
 
                 if not path:
                     print(f"      [-] 均未能定位上传文件路径，进行下一次策略迭代。")
@@ -363,7 +363,7 @@ class UnifiedUploadAuditModule(BaseModule):
 
         return ordered[:4]  # 最多 4 个目标，保持速度
 
-    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str) -> Optional[str]:
+    def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str, original_filename: str = "", source_page: str = "") -> Optional[str]:
         """
         组合 LLM 响应分析、DOM 差异对比与兜底正则提取真实路径。
 
@@ -392,6 +392,9 @@ class UnifiedUploadAuditModule(BaseModule):
         # 2. 上传后重新渲染目标页面，抓取新 DOM 做差异对比
         time.sleep(0.3)
         post_targets = self._get_post_upload_target_url(resp, action_url)
+        # ── 新增 ── 加入 source_page：很多 CMS 上传后图片会显示在上传表单页本身，而非接口响应 ─
+        if source_page and source_page not in post_targets:
+            post_targets.append(source_page)
         after_links: set = set()
 
         for target in post_targets:
