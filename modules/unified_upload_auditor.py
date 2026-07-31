@@ -152,8 +152,12 @@ class UnifiedUploadAuditModule(BaseModule):
         self._path_chain = PATH_EXTRACT_PROMPT | get_structured_llm(ExtractPathResult)
         self._diag_chain = DIAGNOSTIC_PROMPT | get_llm().with_structured_output(DiagnosticResult, method="json_mode")
 
-        # PHP 无害探针标记
+        # PHP 无害探针标记（用于 PHP 类后缀策略）
         self.webshell_content = b"<?php echo 'VULN_VERIFIED_MARKER_UPLOAD'; ?>"
+        # ASP 无害探针标记（用于 ASP/ASPX 类后缀策略）
+        self.asp_webshell_content = b"<% Response.Write(\"VULN_VERIFIED_MARKER_UPLOAD\") %>"
+        # JSP 无害探针标记（用于 JSP 类后缀策略）
+        self.jsp_webshell_content = b"<% out.println(\"VULN_VERIFIED_MARKER_UPLOAD\"); %>"
 
     def run(self, url: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         result = self._base_result(url)
@@ -198,6 +202,9 @@ class UnifiedUploadAuditModule(BaseModule):
                                     "action_url": candidate,
                                     "source_url": candidate,
                                     "file_input_names": [f["inputs"][0]["name"] if f["inputs"] else "file"],
+                                    "accepted_types": upload_candidates[0].get("accepted_types", []) if upload_candidates else [],
+                                    "found_on_page": candidate,
+                                    "referer_url": _vform.get("source_url", ""),
                                     "action": act,
                                     "base_page": page_name,
                                     "found_via": f"action={act} 变体探测"
@@ -234,15 +241,29 @@ class UnifiedUploadAuditModule(BaseModule):
             baseline_links = self._collect_baseline_links(observation_pages)
 
             # ── 先传一个无害测试文件，摸底文件存储路径规律 ─────────
+            # 问题 2 修复：调用 _upload_test_file() 初始化 test_file_url
+            test_file_url = self._upload_test_file(
+                action_url, file_param, form_data, accept_types, source_page, observation_pages, baseline_links
+            )
+
+            # 问题 3 修复：初始化 form_vulnerable 标志
+            form_vulnerable = False
 
             for strat_idx, strategy in enumerate(strategies, 1):
                 strat_name = strategy.name
                 suffix = strategy.filename_suffix
                 content_type = strategy.content_type
+
+                # 问题 1 修复：根据策略后缀动态生成文件名
+                filename = f"{uuid.uuid4().hex[:8]}_shell{suffix}"
+
+                # 问题 5 修复：根据文件后缀选择对应的探针内容
+                shell_content = self._get_webshell_content(suffix)
+
                 print(f"\n    → [Round {strat_idx}/{len(strategies)}] 执行策略: '{strat_name}' | 文件名: {filename} | Content-Type: {content_type}")
 
                 # 发送物理上传请求
-                resp = self._send_upload(action_url, file_param, filename, self.webshell_content, content_type, form_data)
+                resp = self._send_upload(action_url, file_param, filename, shell_content, content_type, form_data)
                 if not resp:
                     print(f"      [-] 上传请求未收到有效响应，跳过。")
                     continue
@@ -255,8 +276,9 @@ class UnifiedUploadAuditModule(BaseModule):
                     test_base = test_file_url.rsplit('/', 1)[0] + '/'
                     webshell_path = self._infer_webshell_path(action_url, source_page, test_base, filename)
 
+                # 问题 4 修复：传入实际 filename 而非空字符串
                 path = webshell_path if webshell_path else self._extract_webshell_path(
-                    resp, filename, baseline_links, action_url, strat_name, "", source_page,
+                    resp, filename, baseline_links, action_url, strat_name, filename, source_page,
                     # 传入 observation_pages：上传阶段已发现的所有后台页面，
                     # 作为"已知可能展示上传文件的页面"进行扫描
                     observation_pages
@@ -337,6 +359,11 @@ class UnifiedUploadAuditModule(BaseModule):
                                 })
                                 form_vulnerable = True
                                 break
+
+            # 问题 3 修复：如果当前端点已确认漏洞，跳过剩余端点的测试
+            if form_vulnerable:
+                print(f"  [UploadAgent] 端点 [{action_url}] 已确认存在漏洞，跳过剩余端点测试。")
+                break
 
         result["summary"] = f"LLM 上传漏洞测试完成。发现高危 Webshell/RCE 漏洞: {len(result['findings'])} 个。"
         return result
@@ -770,6 +797,30 @@ class UnifiedUploadAuditModule(BaseModule):
         print(f"      [推断] 测试文件 URL: {test_url}")
         print(f"      [推断] 推断 webshell 路径: {upload_path_prefix}（具体文件名需依赖后续扫描）")
         return upload_path_prefix
+
+    def _get_webshell_content(self, suffix: str) -> bytes:
+        """
+        根据文件后缀返回对应的无害探针内容。
+
+        问题 5 修复：避免 PHP 内容配合图片后缀导致探针永远无法执行。
+        """
+        suffix_lower = suffix.lower()
+
+        # PHP 类后缀
+        if suffix_lower in ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.inc']:
+            return self.webshell_content
+
+        # ASP/ASPX 类后缀
+        if suffix_lower in ['.asp', '.aspx']:
+            return self.asp_webshell_content
+
+        # JSP 类后缀
+        if suffix_lower in ['.jsp', '.jspx']:
+            return self.jsp_webshell_content
+
+        # 图片或其他后缀：返回纯文本标记（用于测试文件存储路径，不期望执行）
+        # 这种情况下探针不会被解析执行，但可以用于验证文件是否成功上传
+        return b"VULN_VERIFIED_MARKER_UPLOAD_TEXT_ONLY"
 
     def _verify_and_diagnose(self, webshell_url: str, filename: str) -> Optional[DiagnosticResult]:
         """访问推算出的 Webshell URL，并交给 Diagnostic Agent 进行分析与诊断。"""
