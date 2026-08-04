@@ -35,6 +35,14 @@ CRAWLER_MAX_CANDIDATE_LINKS = 15 # 每页最多候选链接数
 UPLOAD_MAX_DEPTH = 4             # 登录成功后，后台寻找上传点的最大深度
 UPLOAD_MAX_PAGES = 100           # 登录成功后，最多安全遍历的后台页面数量
 
+# ── Playwright 模擬點擊爬蟲配置 ──────────────────────────────
+# 在 bypass 成功後，使用 Playwright 真實瀏覽器模擬點擊遍歷後台頁面，發現上傳點
+# 專為 SPA 框架（Vue/React/Angular）和重度 JS 渲染的後台系統設計
+PLAYWRIGHT_CRAWLER_ENABLED = True
+PLAYWRIGHT_CRAWLER_MAX_PAGES = 50     # 最多探索頁面數
+PLAYWRIGHT_CRAWLER_MAX_DEPTH = 3      # 最大點擊深度
+PLAYWRIGHT_CRAWLER_TIMEOUT = 10000    # 單頁等待超時（毫秒）
+
 # ── 外部工具发现配置 ───────────────────────────────────────
 # 设为 True 时，在爬虫发现阶段额外调用外部工具扩大 URL 覆盖范围
 TOOL_DISCOVERY_ENABLED = True

@@ -231,7 +231,25 @@ class UploadIdentifierModule(BaseModule):
                                 all_upload_forms.extend(k_forms)
                         except Exception as e:
                             continue
-                        
+
+            # Phase 4: Playwright 模擬點擊深度探索（僅在已認證狀態下啟用）
+            from web_audit.config.settings import PLAYWRIGHT_CRAWLER_ENABLED
+            if is_authenticated and PLAYWRIGHT_CRAWLER_ENABLED:
+                from web_audit.core.playwright_crawler import PlaywrightSiteCrawler
+                from web_audit.config.settings import PLAYWRIGHT_CRAWLER_MAX_PAGES, PLAYWRIGHT_CRAWLER_MAX_DEPTH
+                pw_crawler = PlaywrightSiteCrawler(
+                    self.requester,
+                    max_pages=PLAYWRIGHT_CRAWLER_MAX_PAGES,
+                    max_depth=PLAYWRIGHT_CRAWLER_MAX_DEPTH
+                )
+                pw_upload_forms = pw_crawler.crawl_and_find_uploads(url)
+                if pw_upload_forms:
+                    print(f"  [UploadIdentifier] Phase 4: Playwright 模擬點擊發現 {len(pw_upload_forms)} 個上傳點！")
+                    for f in pw_upload_forms:
+                        f["source_url"] = f.get("source_url", url)
+                        f["referer_url"] = f.get("referer_url", url)
+                    all_upload_forms.extend(pw_upload_forms)
+
         # 4. 整理结果与去重
         if not all_upload_forms:
             result["summary"] = "未发现文件上传功能"
