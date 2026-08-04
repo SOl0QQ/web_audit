@@ -341,6 +341,29 @@ class UploadIdentifierModule(BaseModule):
             print(f"  [UploadIdentifier] 成功记录上传端点: {action_url} (来源: {source})")
 
         result["summary"] = f"共发现 {len(result['findings'])} 个文件上传功能点。"
+
+        # 集中打印上傳接口清單
+        if result["findings"]:
+            print(f"\n{'─' * 60}")
+            print(f"  📋 上傳接口清單 (共 {len(result['findings'])} 個)")
+            print(f"{'─' * 60}")
+            for idx, finding in enumerate(result["findings"], 1):
+                action_url = finding.get("action_url", "N/A")
+                method = finding.get("method", "N/A").upper()
+                file_params = finding.get("file_input_names", [])
+                found_on = finding.get("found_on_page", "N/A")
+                multipart = finding.get("is_multipart", False)
+                accepted = finding.get("accepted_types", [])
+
+                print(f"  [{idx}] {method} {action_url}")
+                print(f"      文件參數: {', '.join(file_params) if file_params else 'N/A'}")
+                print(f"      發現頁面: {found_on}")
+                if multipart:
+                    print(f"      enctype: multipart/form-data")
+                if accepted:
+                    print(f"      允許類型: {', '.join(accepted)}")
+            print(f"{'─' * 60}\n")
+
         return result
 
     def _extract_upload_candidate_links(self, parser: PageParser) -> List[Dict[str, str]]:
