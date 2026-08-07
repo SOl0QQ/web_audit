@@ -84,7 +84,49 @@ class Reporter:
                 print(f"      发现数量: {findings_count}")
                 if time_spent is not None:
                     print(f"      耗时: {time_spent} 秒")
+
+        # 打印 Webshell 漏洞详情
+        self._print_webshell_findings()
+
         print("=" * 60)
+
+    def _print_webshell_findings(self):
+        """打印所有发现的 Webshell 路径和漏洞详情。"""
+        webshell_findings = []
+
+        # 收集所有 unified_upload_audit 模块的 findings
+        for url, results in self.url_results.items():
+            for result in results:
+                if result.get("module") == "unified_upload_audit":
+                    for finding in result.get("findings", []):
+                        if finding.get("shell_path"):
+                            webshell_findings.append({
+                                "target_url": url,
+                                "upload_endpoint": finding.get("url", "N/A"),
+                                "strategy": finding.get("strategy", "N/A"),
+                                "payload_file": finding.get("payload_file", "N/A"),
+                                "shell_path": finding.get("shell_path", "N/A"),
+                                "severity": finding.get("severity", "Critical"),
+                                "rce_output": finding.get("rce_output", "")[:200],  # 截断过长的输出
+                            })
+
+        if not webshell_findings:
+            return
+
+        print(f"\n{'─' * 60}")
+        print(f"  🚨 Webshell/RCE 漏洞详情 (共 {len(webshell_findings)} 個)")
+        print(f"{'─' * 60}")
+
+        for idx, finding in enumerate(webshell_findings, 1):
+            print(f"\n  [{idx}] {finding['severity']} - Webshell 上传成功")
+            print(f"      上传端点: {finding['upload_endpoint']}")
+            print(f"      绕过策略: {finding['strategy']}")
+            print(f"      Payload 文件: {finding['payload_file']}")
+            print(f"      Webshell 路径: {finding['shell_path']}")
+            if finding['rce_output']:
+                print(f"      RCE 输出: {finding['rce_output']}...")
+
+        print(f"\n{'─' * 60}")
 
     @staticmethod
     def _to_text(report_data: Dict[str, Any]) -> str:
