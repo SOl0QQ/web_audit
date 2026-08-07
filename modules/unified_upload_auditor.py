@@ -181,14 +181,22 @@ class UnifiedUploadAuditModule(BaseModule):
             base_path = base_url.path
             base_domain = base_url.netloc
 
-            # 尝试从 URL 中推断 "父级" 页面名（如 shirt.php, avatar.php）
+            # 尝试从 URL 中推断 "父级" 页面名（支持 PHP/JSP/ASP/ASPX）
             import re
-            path_match = re.search(r'([^/?]+\.php)', base_path)
+            path_match = re.search(r'([^/?]+\.(?:php|jsp|jspx|asp|aspx|cfm|do|action))', base_path)
             page_name = path_match.group(1) if path_match else None
 
             if page_name:
                 # 对同一页面的不同 action 做 HTTP 请求探测是否有文件上传控件
-                potential_actions = ["update", "edit", "update_image", "avatar", "image", "upload", "save"]
+                # 包含「新增」和「编辑/更新」两类操作
+                potential_actions = [
+                    # 新增类
+                    "add", "insert", "create", "new", "upload", "save",
+                    # 编辑/更新类
+                    "update", "edit", "modify", "change", "save_edit",
+                    # 特定字段类
+                    "update_image", "avatar", "image", "photo", "file",
+                ]
                 for act in potential_actions:
                     candidate = f"{base_domain}{base_path.split(page_name)[0]}{page_name}?action={act}"
                     try:

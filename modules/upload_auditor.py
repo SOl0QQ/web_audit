@@ -126,12 +126,22 @@ class UploadIdentifierModule(BaseModule):
                         all_upload_forms.extend(sub_forms)
 
             # Phase 2: 基于 UPLOAD_MAX_DEPTH 的广度优先全量搜索 (BFS)
+            # 优先探索「编辑/更新」页面，因为这些页面通常也有上传功能
             from web_audit.config.settings import UPLOAD_MAX_DEPTH, UPLOAD_MAX_PAGES
             print(f"  [UploadIdentifier] 启动 Phase 2 深度安全遍历 (最大深度: {UPLOAD_MAX_DEPTH}, 最大探索页面数: {UPLOAD_MAX_PAGES})...")
             from collections import deque
 
-            # 队列存储元组: (当前页面URL, 当前深度, 父页面URL)
-            queue = deque([(url, 1, None)])
+            # 编辑/更新页面关键词（多语言）
+            edit_keywords = [
+                "edit", "update", "modify", "change", "alter",
+                "编辑", "修改", "更新", "更改",
+                "編集", "更新", "修正",
+                "편집", "수정",
+            ]
+
+            # 队列存储元组: (当前页面URL, 当前深度, 父页面URL, 优先级)
+            # 优先级: 0=普通页面, 1=编辑/更新页面（优先探索）
+            queue = deque([(url, 1, None, 0)])
             pages_crawled = 0
 
             url_parser_map = {url: parser}
@@ -139,8 +149,23 @@ class UploadIdentifierModule(BaseModule):
             visited_patterns = set()
             visited_patterns.add(self._get_url_signature(url))
 
+            def is_edit_page(link_url: str, link_text: str) -> bool:
+                """检测是否是编辑/更新页面"""
+                url_lower = link_url.lower()
+                text_lower = link_text.lower()
+                # 检查 URL 参数
+                if "action=edit" in url_lower or "action=update" in url_lower:
+                    return True
+                if "/edit/" in url_lower or "/update/" in url_lower:
+                    return True
+                # 检查链接文字
+                for kw in edit_keywords:
+                    if kw in text_lower:
+                        return True
+                return False
+
             while queue and pages_crawled < UPLOAD_MAX_PAGES:
-                current_url, current_depth, parent_url = queue.popleft()
+                current_url, current_depth, parent_url, priority = queue.popleft()
 
                 if current_depth > UPLOAD_MAX_DEPTH:
                     continue
@@ -149,7 +174,8 @@ class UploadIdentifierModule(BaseModule):
                     if current_url in url_parser_map:
                         current_parser = url_parser_map[current_url]
                     else:
-                        print(f"    → [Phase2] (Depth:{current_depth}) 探索页面: {current_url}")
+                        priority_tag = " [编辑/更新]" if priority > 0 else ""
+                        print(f"    → [Phase2] (Depth:{current_depth}{priority_tag}) 探索页面: {current_url}")
                         resp = self.requester.get(current_url)
                         if not resp: continue
                         current_parser = PageParser(resp.text, current_url)
@@ -174,14 +200,32 @@ class UploadIdentifierModule(BaseModule):
                     all_links = current_parser.get_all_links(limit=1000)
                     safe_links = [l for l in all_links if self._is_safe_link(l) and self._is_same_domain(url, l["url"])]
 
+                    # 分离编辑页面和普通页面，编辑页面优先入队
+                    edit_links = []
+                    normal_links = []
                     for link in safe_links:
                         href = link["url"]
                         if href not in visited:
                             sig = self._get_url_signature(href)
                             if sig not in visited_patterns:
-                                visited.add(href)
-                                visited_patterns.add(sig)
-                                queue.append((href, current_depth + 1, current_url))
+                                if is_edit_page(href, link.get("text", "")):
+                                    edit_links.append(link)
+                                else:
+                                    normal_links.append(link)
+
+                    # 编辑页面优先加入队列前端（高优先级）
+                    for link in edit_links:
+                        href = link["url"]
+                        visited.add(href)
+                        visited_patterns.add(self._get_url_signature(href))
+                        queue.appendleft((href, current_depth + 1, current_url, 1))
+
+                    # 普通页面加入队列后端
+                    for link in normal_links:
+                        href = link["url"]
+                        visited.add(href)
+                        visited_patterns.add(self._get_url_signature(href))
+                        queue.append((href, current_depth + 1, current_url, 0))
 
                 except Exception as e:
                     print(f"    [Error] 探索 {current_url} 时发生异常: {e}")
