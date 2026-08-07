@@ -1,8 +1,9 @@
 """
 报告生成器
 
-将各模块的审计结果汇总，输出为 JSON 或格式化文本报告。
+将各模块的审计结果汇总，输出为 CSV、JSON 或格式化文本报告。
 """
+import csv
 import json
 import os
 from datetime import datetime
@@ -143,7 +144,7 @@ class Reporter:
             for result in report_data.get("global_results", []):
                 lines.append(f"模块: {result.get('module', 'N/A')}")
                 lines.append(f"摘要: {result.get('summary', 'N/A')}")
-                
+
         for url, results in report_data.get("scanned_urls", {}).items():
             lines.append(f"\n🎯 URL: {url}")
             for result in results:
@@ -153,3 +154,125 @@ class Reporter:
                 lines.append(f"  发现: {json.dumps(result.get('findings', []), ensure_ascii=False, indent=4)}")
                 lines.append("")
         return "\n".join(lines)
+
+    def extract_csv_row(self) -> Dict[str, str]:
+        """
+        提取 CSV 報告所需的數據。
+
+        返回格式：
+        {
+            "domain": "abc.com",
+            "login_page": "abc.com/login",
+            "bypass_method": "admin' OR '1'='1",
+            "upload_page": "abc.com/shirt.php?action=insert",
+            "webshell_success": "abc.com/logo/d49a0b656613cf356eff5c9dc0786949.php",
+            "taken_time": "16min"
+        }
+        """
+        import urllib.parse
+
+        # 提取域名
+        parsed = urllib.parse.urlparse(self.target_url)
+        domain = parsed.netloc or parsed.path
+
+        # 提取登錄頁
+        login_page = ""
+        for result in self.global_results:
+            if result.get("module") == "login_detector":
+                findings = result.get("findings", [])
+                if findings:
+                    login_page = findings[0].get("candidate_url", "")
+                    # 轉換為相對路徑格式
+                    if login_page:
+                        lp_parsed = urllib.parse.urlparse(login_page)
+                        login_page = f"{lp_parsed.netloc}{lp_parsed.path}"
+                break
+
+        # 提取 bypass 方法和 payload
+        bypass_method = ""
+        for url, results in self.url_results.items():
+            for result in results:
+                if result.get("module") == "sqli_detector":
+                    for finding in result.get("findings", []):
+                        if finding.get("is_bypassed"):
+                            bypass_method = finding.get("payload", "")
+                            break
+                    if bypass_method:
+                        break
+            if bypass_method:
+                break
+
+        # 提取上傳頁面
+        upload_pages = []
+        for url, results in self.url_results.items():
+            for result in results:
+                if result.get("module") == "upload_identifier":
+                    for finding in result.get("findings", []):
+                        action_url = finding.get("action_url", "")
+                        if action_url:
+                            up_parsed = urllib.parse.urlparse(action_url)
+                            upload_pages.append(f"{up_parsed.netloc}{up_parsed.path}")
+
+        upload_page = "; ".join(upload_pages) if upload_pages else ""
+
+        # 提取 Webshell 路徑
+        webshell_paths = []
+        for url, results in self.url_results.items():
+            for result in results:
+                if result.get("module") == "unified_upload_audit":
+                    for finding in result.get("findings", []):
+                        shell_path = finding.get("shell_path", "")
+                        if shell_path:
+                            sp_parsed = urllib.parse.urlparse(shell_path)
+                            webshell_paths.append(f"{sp_parsed.netloc}{sp_parsed.path}")
+
+        webshell_success = "; ".join(webshell_paths) if webshell_paths else ""
+
+        # 格式化耗時
+        total_seconds = int(self.total_time)
+        if total_seconds >= 60:
+            minutes = total_seconds // 60
+            seconds = total_seconds % 60
+            taken_time = f"{minutes}min{seconds}s" if seconds else f"{minutes}min"
+        else:
+            taken_time = f"{total_seconds}s"
+
+        return {
+            "domain": domain,
+            "login_page": login_page,
+            "bypass_method": bypass_method,
+            "upload_page": upload_page,
+            "webshell_success": webshell_success,
+            "taken_time": taken_time,
+        }
+
+    @staticmethod
+    def write_csv_report(rows: List[Dict[str, str]], output_dir: str = None) -> str:
+        """
+        將多個目標的結果寫入全局 CSV 報告。
+
+        Args:
+            rows: 每個目標的 CSV 數據行
+            output_dir: 輸出目錄，默認為 REPORT_OUTPUT_DIR
+
+        Returns:
+            CSV 文件路徑
+        """
+        from web_audit.config.settings import CSV_REPORT_FILENAME
+
+        if output_dir is None:
+            output_dir = REPORT_OUTPUT_DIR
+
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, CSV_REPORT_FILENAME)
+
+        fieldnames = ["domain", "login_page", "bypass_method", "upload_page", "webshell_success", "taken_time"]
+
+        with open(filepath, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+
+        print(f"\n[Reporter] CSV 報告已生成: {filepath}")
+        return filepath

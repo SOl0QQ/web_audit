@@ -124,6 +124,9 @@ def run_pipeline(target_url: str, step: str = "all"):
     Args:
         target_url: 目标网站的起始 URL（不需要是登录页）
         step: 指定执行的模块 ("all", "login", "sqli", "upload_id", "upload_audit")
+
+    Returns:
+        Reporter 對象，包含該目標的所有審計結果
     """
     # 全局防御性修复：确保 target_url 始终带有 http:// 协议前缀
     if target_url and not target_url.startswith("http://") and not target_url.startswith("https://"):
@@ -287,6 +290,8 @@ def run_pipeline(target_url: str, step: str = "all"):
     report_path = reporter.generate()
     print(f"\n完整报告路径: {report_path}")
 
+    return reporter
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -350,24 +355,40 @@ def main():
         sys.exit(1)
 
     print(f"\n[System] 共加载了 {len(targets)} 个扫描目标，准备开始并发扫描 (并发数: {args.threads})...\n")
-    
+
     import concurrent.futures
     import threading
+
+    # 收集所有目标的 Reporter 对象
+    all_reporters = []
+    reporters_lock = threading.Lock()
 
     def scan_task(url: str, index: int, total: int):
         try:
             print(f"\n>>> [{index}/{total}] [Thread-{threading.get_ident()}] 正在启动扫描任务: {url}")
-            run_pipeline(url, step=args.step)
+            reporter = run_pipeline(url, step=args.step)
+            if reporter:
+                with reporters_lock:
+                    all_reporters.append(reporter)
+            return reporter
         except Exception as e:
             print(f"\n[Error] 扫描目标 {url} 发生未捕获的严重异常，已强制跳过。错误详情: {e}")
             import traceback
             traceback.print_exc()
+            return None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         futures = [executor.submit(scan_task, t, i, len(targets)) for i, t in enumerate(targets, 1)]
         concurrent.futures.wait(futures)
 
     print(f"\n[System] 批量扫描完成！共处理了 {len(targets)} 个目标。")
+
+    # 生成全局 CSV 报告
+    if all_reporters:
+        from web_audit.reports.reporter import Reporter
+        csv_rows = [reporter.extract_csv_row() for reporter in all_reporters]
+        csv_path = Reporter.write_csv_report(csv_rows)
+        print(f"\n[System] 全局 CSV 报告已生成: {csv_path}")
 
 
 if __name__ == "__main__":

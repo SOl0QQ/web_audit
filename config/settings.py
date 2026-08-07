@@ -74,7 +74,8 @@ DIRSEARCH_MAX_TIME = 120          # dirsearch 进程最大运行时间（秒）
 
 # ── 审计结果配置 ───────────────────────────────────────────
 REPORT_OUTPUT_DIR = "./reports"  # 报告输出目录
-REPORT_FORMAT = "json"           # "json" | "text"
+REPORT_FORMAT = "csv"            # "csv" | "json" | "text"
+CSV_REPORT_FILENAME = "audit_report.csv"  # 全局 CSV 報告文件名
 
 # ── 上传安全审查配置 ────────────────────────────────────────
 ALLOWED_MIME_TYPES = {
