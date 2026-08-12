@@ -283,6 +283,16 @@ def run_pipeline(target_url: str, step: str = "all"):
 
     # ── 生成报告 ───────────────────────────────────────────
     reporter.total_time = time.time() - pipeline_start_time
+
+    # ── 增量写入 CSV 汇总（每完成一个域名立即追加一行） ──────
+    try:
+        from web_audit.reports.reporter import build_csv_row, append_csv_row
+        csv_row = build_csv_row(reporter)
+        append_csv_row(csv_row)
+        print(f"\n[Reporter] ✅ 已写入 CSV 汇总行: domain={csv_row.get('domain')}")
+    except Exception as csv_err:
+        print(f"\n[Reporter] ⚠️ 写入 CSV 汇总失败: {csv_err}")
+
     reporter.print_summary()
     report_path = reporter.generate()
     print(f"\n完整报告路径: {report_path}")

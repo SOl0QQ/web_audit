@@ -3,11 +3,122 @@
 
 将各模块的审计结果汇总，输出为 JSON 或格式化文本报告。
 """
+import csv
 import json
 import os
+import threading
 from datetime import datetime
+from urllib.parse import urlparse
 from typing import List, Dict, Any
-from web_audit.config.settings import REPORT_OUTPUT_DIR, REPORT_FORMAT
+from web_audit.config.settings import REPORT_OUTPUT_DIR, REPORT_FORMAT, CSV_OUTPUT_PATH
+
+# 全局文件锁，保证多线程并发扫描时 CSV 追加写入不会交错
+_csv_lock = threading.Lock()
+
+# CSV 列顺序（固定）
+CSV_COLUMNS = [
+    "domain",
+    "login_page",
+    "bypass_method",
+    "upload_page",
+    "webshell_success",
+    "taken_time",
+]
+
+
+def _ensure_csv_header(path: str):
+    """如果 CSV 文件不存在或为空，则写入表头。"""
+    needs_header = (not os.path.exists(path)) or os.path.getsize(path) == 0
+    if needs_header:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(CSV_COLUMNS)
+
+
+def append_csv_row(row: Dict[str, Any], path: str = CSV_OUTPUT_PATH):
+    """线程安全地追加一行 CSV 记录。"""
+    with _csv_lock:
+        _ensure_csv_header(path)
+        with open(path, "a", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([row.get(c, "") for c in CSV_COLUMNS])
+
+
+def build_csv_row(reporter: "Reporter") -> Dict[str, Any]:
+    """从 Reporter 已收集的结果中提取一行 CSV 字段。
+
+    字段提取规则：
+      - domain:           目标域名（从 target_url 解析）
+      - login_page:       登录页识别阶段发现的第一个候选 URL
+      - bypass_method:    SQL 注入绕过成功时使用的 evidence/reason（若多条用 ' | ' 拼接）
+      - upload_page:      文件上传功能识别阶段发现的第一个 action_url
+      - webshell_success: 上传审计阶段确认的 webshell URL（若多个用 ' | ' 拼接）
+      - taken_time:       该域名流水线总耗时（秒，保留 2 位小数）
+    """
+    # ── domain ──
+    domain = reporter.target_url or ""
+    try:
+        parsed = urlparse(domain if "://" in domain else "http://" + domain)
+        domain = parsed.netloc or domain
+    except Exception:
+        pass
+
+    # ── login_page: 从 global_results 中找 login_detector 的第一个候选 ──
+    login_page = ""
+    for res in reporter.global_results:
+        if res.get("module") == "login_detector":
+            findings = res.get("findings") or []
+            if findings:
+                login_page = findings[0].get("candidate_url") or ""
+            break
+
+    # ── bypass_method / upload_page / webshell_success ──
+    bypass_methods: List[str] = []
+    upload_pages: List[str] = []
+    webshell_successes: List[str] = []
+
+    for _url, results in reporter.url_results.items():
+        for res in results:
+            module = res.get("module", "")
+            findings = res.get("findings") or []
+
+            # SQLi 模块：收集绕过成功的 evidence
+            if module == "sqli_detector":
+                for f in findings:
+                    if f.get("is_bypassed"):
+                        ev = f.get("evidence")
+                        if isinstance(ev, list):
+                            ev = "; ".join(str(e) for e in ev)
+                        elif ev is None:
+                            ev = f.get("reason") or f.get("payload") or ""
+                        if ev:
+                            bypass_methods.append(str(ev))
+
+            # 上传识别模块：收集 action_url
+            elif module == "upload_identifier":
+                for f in findings:
+                    action = f.get("action_url") or f.get("candidate_url") or ""
+                    if action and action not in upload_pages:
+                        upload_pages.append(action)
+
+            # 统一上传审计模块：收集 webshell 路径
+            elif module == "unified_upload_audit":
+                for f in findings:
+                    shell = f.get("shell_path") or f.get("url") or ""
+                    strategy = f.get("strategy") or ""
+                    if shell:
+                        tag = f"{shell}" + (f" ({strategy})" if strategy else "")
+                        webshell_successes.append(tag)
+
+    return {
+        "domain": domain,
+        "login_page": login_page,
+        "bypass_method": " | ".join(bypass_methods),
+        "upload_page": " | ".join(upload_pages),
+        "webshell_success": " | ".join(webshell_successes),
+        "taken_time": round(reporter.total_time, 2) if reporter.total_time else "",
+    }
 
 
 class Reporter:

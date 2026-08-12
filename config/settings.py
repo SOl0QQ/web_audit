@@ -75,6 +75,8 @@ DIRSEARCH_MAX_TIME = 120          # dirsearch 进程最大运行时间（秒）
 # ── 审计结果配置 ───────────────────────────────────────────
 REPORT_OUTPUT_DIR = "./reports"  # 报告输出目录
 REPORT_FORMAT = "json"           # "json" | "text"
+# 汇总 CSV 输出路径（每处理完一个域名就追加一行）
+CSV_OUTPUT_PATH = os.path.join(REPORT_OUTPUT_DIR, "audit_results.csv")
 
 # ── 上传安全审查配置 ────────────────────────────────────────
 ALLOWED_MIME_TYPES = {
