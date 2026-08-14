@@ -83,17 +83,19 @@ def build_csv_row(reporter: "Reporter") -> Dict[str, Any]:
             module = res.get("module", "")
             findings = res.get("findings") or []
 
-            # SQLi 模块：收集绕过成功的 evidence
+            # SQLi 模块：收集绕过成功的精简方法（payload + reason）
             if module == "sqli_detector":
                 for f in findings:
                     if f.get("is_bypassed"):
-                        ev = f.get("evidence")
-                        if isinstance(ev, list):
-                            ev = "; ".join(str(e) for e in ev)
-                        elif ev is None:
-                            ev = f.get("reason") or f.get("payload") or ""
-                        if ev:
-                            bypass_methods.append(str(ev))
+                        payload = f.get("payload") or ""
+                        reason = f.get("reason") or ""
+                        param = f.get("parameter") or ""
+                        # 格式: [param] payload（精简可读）
+                        tag = ""
+                        if param:
+                            tag += f"[{param}] "
+                        tag += payload or "(no payload)"
+                        bypass_methods.append(tag)
 
             # 上传识别模块：收集 action_url
             elif module == "upload_identifier":
