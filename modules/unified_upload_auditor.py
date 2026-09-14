@@ -587,177 +587,250 @@ class UnifiedUploadAuditModule(BaseModule):
 
     def _extract_webshell_path(self, resp: Any, filename: str, baseline_links: Set[str], action_url: str, strat_name: str, original_filename: str = "", source_page: str = "", observation_pages: List[str] = None, discovered_upload_dirs: List[str] = None, baseline_resources: Set[str] = None) -> Optional[str]:
         """
-        组合 LLM 响应分析、DOM 差异对比与兜底正则提取真实路径。
+        使用策略模式提取 Webshell 路径。
 
-        搜索范围按优先级递增：
-        1. 上传响应 JSON
-        2. 上传接口返回页面 / 上传表单页
-        3. 已知页面列表（文件管理、产品列表等可能展示上传文件的页面）
-        4. 扫描发现的上传目录
-        5. Playwright 网络资源检测（捕获新加载的资源）
-        6. 正则兜底
+        策略按优先级执行，首个成功的策略返回结果：
+        1. LLM 响应解析策略
+        2. DOM 差异对比策略
+        3. 目录扫描策略
+        4. Playwright 网络检测策略
+        5. 正则兜底策略
+        6. 已知页面扫描策略
         """
-        path = None
+        # 构建策略上下文
+        context = {
+            "resp": resp,
+            "filename": filename,
+            "baseline_links": baseline_links,
+            "action_url": action_url,
+            "strat_name": strat_name,
+            "original_filename": original_filename,
+            "source_page": source_page,
+            "observation_pages": observation_pages or [],
+            "discovered_upload_dirs": discovered_upload_dirs or [],
+            "baseline_resources": baseline_resources or set(),
+        }
 
-        # 1. LLM 从上传响应中寻找路径
-        if len(resp.text) >= 10:
+        # 按优先级执行策略
+        strategies = [
+            ("LLM 响应解析", self._strategy_llm_response),
+            ("DOM 差异对比", self._strategy_dom_diff),
+            ("目录扫描", self._strategy_directory_scan),
+            ("Playwright 网络检测", self._strategy_playwright_network),
+            ("正则兜底", self._strategy_regex_fallback),
+            ("已知页面扫描", self._strategy_known_pages),
+        ]
+
+        for name, strategy_fn in strategies:
             try:
-                    extract_res: ExtractPathResult = self._path_chain.invoke({
-                        "filename": filename,
-                        "status_code": resp.status_code,
-                        "response_body": resp.text[:2000]
-                    })
-                    if extract_res and extract_res.extracted_path:
-                        ep = extract_res.extracted_path.strip()
-                        if "/" in ep or "." in ep:
-                            print(f"      [LLM PathAgent] 从响应中解析出路径: {ep}")
-                            return ep
+                path = strategy_fn(context)
+                if path:
+                    print(f"      [{name}策略] 成功提取路径: {path}")
+                    return path
             except Exception as e:
-                    pass
+                print(f"      [{name}策略] 执行失败: {e}")
+                continue
 
-        # 2. 上传后重新渲染目标页面，抓取新 DOM 做差异对比
+        return None
+
+    def _strategy_llm_response(self, ctx: Dict) -> Optional[str]:
+        """策略 1: LLM 从上传响应中解析路径"""
+        resp = ctx["resp"]
+        filename = ctx["filename"]
+
+        if len(resp.text) < 10:
+            return None
+
+        try:
+            extract_res: ExtractPathResult = self._path_chain.invoke({
+                "filename": filename,
+                "status_code": resp.status_code,
+                "response_body": resp.text[:2000]
+            })
+            if extract_res and extract_res.extracted_path:
+                ep = extract_res.extracted_path.strip()
+                if "/" in ep or "." in ep:
+                    print(f"      [LLM PathAgent] 从响应中解析出路径: {ep}")
+                    return ep
+        except Exception:
+            pass
+        return None
+
+    def _strategy_dom_diff(self, ctx: Dict) -> Optional[str]:
+        """策略 2: DOM 差异对比提取路径"""
+        resp = ctx["resp"]
+        action_url = ctx["action_url"]
+        source_page = ctx["source_page"]
+        baseline_links = ctx["baseline_links"]
+        discovered_upload_dirs = ctx["discovered_upload_dirs"]
+        filename = ctx["filename"]
+        strat_name = ctx["strat_name"]
+
+        # 上传后重新渲染目标页面，抓取新 DOM 做差异对比
         time.sleep(0.3)
         post_targets = self._get_post_upload_target_url(resp, action_url)
-        # ── 新增 ── 加入 source_page：很多 CMS 上传后图片会显示在上传表单页本身，而非接口响应 ─
         if source_page and source_page not in post_targets:
             post_targets.append(source_page)
-        after_links: set = set()
 
+        after_links: set = set()
         for target in post_targets:
             try:
-                    html_text = self.requester.fetch_rendered_html(target)
-                    if html_text:
-                        after_links.update(self._extract_all_links(html_text))
+                html_text = self.requester.fetch_rendered_html(target)
+                if html_text:
+                    after_links.update(self._extract_all_links(html_text))
             except Exception:
-                    pass
+                pass
 
         new_links_set = after_links - baseline_links
 
-        # 2a. 新路径提取: 启发式 + UUID 部分匹配（处理服务器重命名场景）
+        # 2a. 启发式提取
         path = self._extract_path_via_dom_diff(new_links_set, baseline_links, filename, resp, discovered_upload_dirs)
-
-        # 2b. 评分排序兜底（UUID 前缀存在时有效）
-        if not path:
-            path = self._find_best_shell_path(baseline_links, after_links, filename)
-        if not path:
-            path = self._find_fallback_shell_path(baseline_links, after_links, strat_name)
-
         if path:
             print(f"      [DOM Diff] 通过多页对比捕捉到新增资源: {path}")
             return path
 
-        # 3. 扫描发现的上传目录（从页面 img src 等链接中提取的目录）
-        if discovered_upload_dirs:
-            path = self._scan_discovered_upload_dirs(discovered_upload_dirs, filename, action_url, source_page)
-            if path:
-                print(f"      [UploadDir Scan] 从发现的上传目录中找到 webshell: {path}")
-                return path
+        # 2b. 评分排序兜底
+        path = self._find_best_shell_path(baseline_links, after_links, filename)
+        if path:
+            return path
 
-        # 4. Playwright 网络资源检测（捕获上传后页面新加载的资源）
-        if baseline_resources and observation_pages:
-            path = self._detect_new_resources_via_playwright(observation_pages, baseline_resources, filename)
-            if path:
-                print(f"      [Playwright Detect] 通过网络资源差异检测找到 webshell: {path}")
-                return path
+        path = self._find_fallback_shell_path(baseline_links, after_links, strat_name)
+        return path
 
-        # 5. 正则兜底扫描（在上传响应原文中查找文件名）
+    def _strategy_directory_scan(self, ctx: Dict) -> Optional[str]:
+        """策略 3: 扫描发现的上传目录"""
+        discovered_upload_dirs = ctx["discovered_upload_dirs"]
+        if not discovered_upload_dirs:
+            return None
+
+        filename = ctx["filename"]
+        action_url = ctx["action_url"]
+        source_page = ctx["source_page"]
+
+        path = self._scan_discovered_upload_dirs(discovered_upload_dirs, filename, action_url, source_page)
+        if path:
+            print(f"      [UploadDir Scan] 从发现的上传目录中找到 webshell: {path}")
+        return path
+
+    def _strategy_playwright_network(self, ctx: Dict) -> Optional[str]:
+        """策略 4: Playwright 网络资源检测"""
+        baseline_resources = ctx["baseline_resources"]
+        observation_pages = ctx["observation_pages"]
+        filename = ctx["filename"]
+
+        if not baseline_resources or not observation_pages:
+            return None
+
+        path = self._detect_new_resources_via_playwright(observation_pages, baseline_resources, filename)
+        if path:
+            print(f"      [Playwright Detect] 通过网络资源差异检测找到 webshell: {path}")
+        return path
+
+    def _strategy_regex_fallback(self, ctx: Dict) -> Optional[str]:
+        """策略 5: 正则兜底扫描"""
+        resp = ctx["resp"]
+        filename = ctx["filename"]
+
         try:
             core_name = filename.split("_")[0]
             match = re.search(r'[\'"]([^\'"]*' + re.escape(core_name) + r'[^\'"]*)[\'"]', resp.text)
             if match:
-                    path = match.group(1)
-                    print(f"      [Regex Fallback] 提取到关联文件名路径: {path}")
-                    return path
+                path = match.group(1)
+                print(f"      [Regex Fallback] 提取到关联文件名路径: {path}")
+                return path
         except Exception:
             pass
+        return None
 
-        # 5. 扫描已知页面列表（observation_pages）寻找上传文件
-        # 很多 CMS 上传后文件会显示在后台页面（文件管理器、产品列表等），
-        # 而不在上传接口或表单页的响应中。
-        if observation_pages:
-            print(f"      [已知页面扫描] 扫描 {len(observation_pages)} 个已知页面查找上传文件...")
-            shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
-            # 使用发现的上传目录，而非硬编码列表
-            # discovered_upload_dirs 是绝对路径（如 https://xxx/logo/）
-            # 需要同时提取路径部分用于匹配相对链接（如 ../logo/）
-            known_upload_dirs = list(discovered_upload_dirs) if discovered_upload_dirs else []
-            # 从已知上传目录中提取路径部分（用于匹配相对路径链接）
-            known_upload_paths = []
+    def _strategy_known_pages(self, ctx: Dict) -> Optional[str]:
+        """策略 6: 扫描已知页面列表寻找上传文件"""
+        observation_pages = ctx["observation_pages"]
+        source_page = ctx["source_page"]
+        action_url = ctx["action_url"]
+        discovered_upload_dirs = ctx["discovered_upload_dirs"]
+        original_filename = ctx["original_filename"]
+
+        if not observation_pages:
+            return None
+
+        print(f"      [已知页面扫描] 扫描 {len(observation_pages)} 个已知页面查找上传文件...")
+        shell_exts = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+
+        # 构建上传目录列表
+        known_upload_dirs = list(discovered_upload_dirs) if discovered_upload_dirs else []
+        known_upload_paths = []
+        for d in known_upload_dirs:
+            try:
+                parsed = urllib.parse.urlparse(d)
+                if parsed.path:
+                    known_upload_paths.append(parsed.path)
+            except Exception:
+                pass
+
+        if not known_upload_dirs and not known_upload_paths:
+            known_upload_paths = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/logo/']
+
+        ignore_kw = ["jquery", "bootstrap", "sweetalert", "datatables", "vendor/", "cdn", "jsdelivr", "/js/", "/css/"]
+
+        def _link_in_upload_dir(link_text: str, page_url: str) -> bool:
+            """检查链接是否在已知的上传目录中"""
+            resolved = urllib.parse.urljoin(page_url, link_text)
+            resolved_path = urllib.parse.urlparse(resolved).path
             for d in known_upload_dirs:
-                try:
-                    parsed = urllib.parse.urlparse(d)
-                    if parsed.path:
-                        known_upload_paths.append(parsed.path)
-                except Exception:
-                    pass
-            # 兜底：如果没发现上传目录，使用常见模式
-            if not known_upload_dirs and not known_upload_paths:
-                known_upload_paths = ['/uploads/', '/files/', '/tmp/', '/upload/', '/media/', '/logo/']
-            ignore_kw = ["jquery", "bootstrap", "sweetalert", "datatables", "vendor/", "cdn", "jsdelivr", "/js/", "/css/"]
+                if d in resolved:
+                    return True
+            for p in known_upload_paths:
+                if p in resolved_path:
+                    return True
+            return False
 
-            def _link_in_upload_dir(link_text: str, page_url: str) -> bool:
-                """检查链接是否在已知的上传目录中。支持相对路径解析。"""
-                # 解析为绝对 URL
-                resolved = urllib.parse.urljoin(page_url, link_text)
-                resolved_path = urllib.parse.urlparse(resolved).path
-                # 检查是否匹配任何已知上传目录
-                for d in known_upload_dirs:
-                    if d in resolved:
-                        return True
-                for p in known_upload_paths:
-                    if p in resolved_path:
-                        return True
-                return False
-
-            for page_url in observation_pages:
-                    if not page_url or page_url == source_page or page_url == action_url:
-                        continue  # 已扫过
-                    try:
-                        page_html = self.requester.fetch_rendered_html(page_url)
-                        if not page_html:
+        # 扫描已知页面
+        for page_url in observation_pages:
+            if not page_url or page_url == source_page or page_url == action_url:
+                continue
+            try:
+                page_html = self.requester.fetch_rendered_html(page_url)
+                if not page_html:
+                    continue
+                page_links = self._extract_all_links(page_html)
+                for link in page_links:
+                    if any(kw in link.lower() for kw in ignore_kw):
+                        continue
+                    if _link_in_upload_dir(link, page_url) and any(
+                        ext in link.lower() for ext in shell_exts
+                    ):
+                        resolved = urllib.parse.urljoin(page_url, link)
+                        base_name = resolved.split('?')[0].rsplit('/', 1)[-1].lower()
+                        if original_filename and original_filename.split('_')[0].lower() in base_name:
+                            print(f"      [已知页面扫描] 命中 UUID 前缀匹配: {resolved}")
+                            return resolved
+                        print(f"      [已知页面扫描] 找到可执行文件: {resolved}")
+                        if original_filename.split('_')[0].lower() not in base_name:
                             continue
-                        page_links = self._extract_all_links(page_html)
-                        for link in page_links:
-                            if any(kw in link.lower() for kw in ignore_kw):
-                                continue
-                            if _link_in_upload_dir(link, page_url) and any(
-                                ext in link.lower() for ext in shell_exts
-                            ):
-                                # 解析为绝对 URL
-                                resolved = urllib.parse.urljoin(page_url, link)
-                                # 如果文件名包含 UUID 前缀则优先返回
-                                base_name = resolved.split('?')[0].rsplit('/', 1)[-1].lower()
-                                if original_filename and original_filename.split('_')[0].lower() in base_name:
-                                    print(f"      [已知页面扫描] 命中 UUID 前缀匹配: {resolved}")
-                                    return resolved
-                                # 否则返回第一个上传目录中的可执行文件（大概率就是上传的文件）
-                                print(f"      [已知页面扫描] 找到可执行文件: {resolved}")
-                                if original_filename.split('_')[0].lower() not in base_name:
-                                    continue  # 不是目标文件，继续
-                                return resolved
-                    except Exception:
-                        continue
+                        return resolved
+            except Exception:
+                continue
 
-            # 5b. 如果 UUID 前缀匹配失败，返回上传目录 + 可执行扩展名的第一个结果
-            for page_url in observation_pages:
-                    if not page_url or page_url == source_page or page_url == action_url:
+        # 兜底：返回上传目录 + 可执行扩展名的第一个结果
+        for page_url in observation_pages:
+            if not page_url or page_url == source_page or page_url == action_url:
+                continue
+            try:
+                page_html = self.requester.fetch_rendered_html(page_url)
+                if not page_html:
+                    continue
+                page_links = self._extract_all_links(page_html)
+                for link in page_links:
+                    if any(kw in link.lower() for kw in ignore_kw):
                         continue
-                    try:
-                        page_html = self.requester.fetch_rendered_html(page_url)
-                        if not page_html:
-                            continue
-                        page_links = self._extract_all_links(page_html)
-                        for link in page_links:
-                            if any(kw in link.lower() for kw in ignore_kw):
-                                continue
-                            if _link_in_upload_dir(link, page_url):
-                                exts_to_check = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
-                                if any(ext in link.lower() for ext in exts_to_check):
-                                    resolved = urllib.parse.urljoin(page_url, link)
-                                    print(f"      [已知页面扫描 5b] 找到上传目录可执行文件: {resolved}")
-                                    return resolved
-                    except Exception:
-                        continue
+                    if _link_in_upload_dir(link, page_url):
+                        exts_to_check = ['.php', '.phtml', '.php3', '.php4', '.php5', '.phar', '.jsp', '.jspx', '.shtml']
+                        if any(ext in link.lower() for ext in exts_to_check):
+                            resolved = urllib.parse.urljoin(page_url, link)
+                            print(f"      [已知页面扫描 兜底] 找到上传目录可执行文件: {resolved}")
+                            return resolved
+            except Exception:
+                continue
 
         return None
 
@@ -1477,6 +1550,7 @@ class UnifiedUploadAuditModule(BaseModule):
     def _playwright_capture_network_resources(self, target_url: str, cookies: list = None) -> Set[str]:
         """
         使用 Playwright 打开页面，捕获所有网络请求的资源 URL。
+        使用浏览器池复用 Chromium 实例。
 
         用于检测上传后页面加载的新资源（如新上传的图片、文件等）。
         可以捕获：
@@ -1496,13 +1570,13 @@ class UnifiedUploadAuditModule(BaseModule):
         captured_urls = set()
 
         try:
-            from playwright.sync_api import sync_playwright
+            from web_audit.core.playwright_pool import get_browser
             import urllib.parse
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(ignore_https_errors=True)
+            browser = get_browser()
+            context = browser.new_context(ignore_https_errors=True)
 
+            try:
                 # 转换 cookies 格式
                 if cookies:
                     pw_cookies = []
@@ -1541,8 +1615,8 @@ class UnifiedUploadAuditModule(BaseModule):
                     page.wait_for_timeout(2000)
                 except Exception as e:
                     print(f"      [Playwright Capture] 页面加载异常: {e}")
-                finally:
-                    browser.close()
+            finally:
+                context.close()  # 只关闭上下文，不关闭浏览器
 
         except ImportError:
             print(f"      [Playwright Capture] Playwright 未安装，跳过网络资源捕获")
@@ -1554,6 +1628,7 @@ class UnifiedUploadAuditModule(BaseModule):
     def _playwright_capture_with_refresh(self, target_url: str, cookies: list = None) -> tuple:
         """
         使用 Playwright 打开页面，刷新后捕获网络资源和 DOM 链接。
+        使用浏览器池复用 Chromium 实例。
 
         增强功能：
         - 打开页面后主动刷新（模拟 F5），触发数据重新加载
@@ -1573,13 +1648,13 @@ class UnifiedUploadAuditModule(BaseModule):
         dom_links = set()
 
         try:
-            from playwright.sync_api import sync_playwright
+            from web_audit.core.playwright_pool import get_browser
             import urllib.parse
 
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(ignore_https_errors=True)
+            browser = get_browser()
+            context = browser.new_context(ignore_https_errors=True)
 
+            try:
                 # 转换 cookies 格式
                 if cookies:
                     pw_cookies = []
@@ -1625,8 +1700,8 @@ class UnifiedUploadAuditModule(BaseModule):
 
                 except Exception as e:
                     print(f"      [Playwright Refresh] 页面加载异常: {e}")
-                finally:
-                    browser.close()
+            finally:
+                context.close()  # 只关闭上下文，不关闭浏览器
 
         except ImportError:
             print(f"      [Playwright Refresh] Playwright 未安装，跳过")

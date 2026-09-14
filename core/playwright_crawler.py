@@ -23,10 +23,10 @@ from web_audit.config.settings import (
     PLAYWRIGHT_CRAWLER_TIMEOUT,
 )
 
-# 檢測 Playwright 是否可用
+# 檢測 Playwright 是否可用（通过浏览器池检测）
 try:
-    from playwright.sync_api import sync_playwright
-    _PLAYWRIGHT_AVAILABLE = True
+    from web_audit.core.playwright_pool import is_available as _playwright_is_available
+    _PLAYWRIGHT_AVAILABLE = _playwright_is_available()
 except ImportError:
     _PLAYWRIGHT_AVAILABLE = False
 
@@ -127,16 +127,17 @@ class PlaywrightSiteCrawler:
         queue.append((start_url, 0, None))
 
         try:
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(headless=True)
+            from web_audit.core.playwright_pool import get_browser
+            browser = get_browser()
 
-                # 構建 Playwright context（同步 Session cookies）
-                context = self._build_browser_context(browser, start_url)
-                page = context.new_page()
+            # 構建 Playwright context（同步 Session cookies）
+            context = self._build_browser_context(browser, start_url)
+            page = context.new_page()
 
-                # 禁用瀏覽器緩存
-                page.route("**/*", lambda route: route.continue_())
+            # 禁用瀏覽器緩存
+            page.route("**/*", lambda route: route.continue_())
 
+            try:
                 while queue and pages_crawled < self.max_pages:
                     current_url, current_depth, referer_url = queue.popleft()
 
@@ -186,8 +187,8 @@ class PlaywrightSiteCrawler:
                     except Exception as e:
                         print(f"    [Phase4 Error] 探索 {current_url} 時發生異常: {e}")
                         continue
-
-                browser.close()
+            finally:
+                context.close()  # 只關閉上下文，不關閉瀏覽器
 
         except Exception as e:
             print(f"  [PlaywrightCrawler] 瀏覽器啟動失敗: {e}")

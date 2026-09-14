@@ -280,6 +280,12 @@ def run_pipeline(target_url: str, step: str = "all"):
 
     finally:
         requester.close()
+        # 关闭 Playwright 浏览器池（如果使用了的话）
+        try:
+            from web_audit.core.playwright_pool import shutdown_browser
+            shutdown_browser()
+        except ImportError:
+            pass  # Playwright 未安装，忽略
 
     # ── 生成报告 ───────────────────────────────────────────
     reporter.total_time = time.time() - pipeline_start_time

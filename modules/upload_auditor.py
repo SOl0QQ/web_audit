@@ -64,12 +64,20 @@ class UploadIdentifierModule(BaseModule):
             result["summary"] = "无法访问目标页面"
             return result
 
-        # 智能判定已登录状态：如果页面 URL 没有退回到 login/signin/checklogin 页面，且响应正常，则自动视为已登录/后台可访问状态
-        resp_url_lower = resp.url.lower()
+        # 智能判定已登录状态：检查页面是否包含密码输入框
+        # 如果没有密码框，说明不是登录页，视为已登录/后台可访问状态
         if not is_authenticated:
-            if not any(kw in resp_url_lower for kw in ["login", "signin", "checklogin", "log_in"]) and resp.status_code == 200:
-                is_authenticated = True
-                print(f"  [UploadIdentifier] 自动探测到目标页面处于可用/已登录状态 ({resp.url})，激活后台全面遍历。")
+            if resp.status_code == 200:
+                # 使用已创建的 parser 检查表单
+                check_forms = parser.get_forms()
+                has_password_field = any(
+                    inp.get("type", "").lower() == "password"
+                    for form in check_forms
+                    for inp in form.get("inputs", [])
+                )
+                if not has_password_field:
+                    is_authenticated = True
+                    print(f"  [UploadIdentifier] 自动探测到目标页面处于可用/已登录状态 (无密码表单)，激活后台全面遍历。")
 
         visited.add(url)
         parser = PageParser(resp.text, url)
