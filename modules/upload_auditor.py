@@ -90,8 +90,8 @@ class UploadIdentifierModule(BaseModule):
             f["referer_url"] = None  # 根页面没有父级
         all_upload_forms.extend(forms)
 
-        # 2. 如果是已认证状态（或处于后台），启动全量深度安全探索
-        if is_authenticated or True:
+        # 2. 如果是已认证状态（bypass 成功后），启动全量深度安全探索
+        if is_authenticated:
             print("  [UploadIdentifier] 启动安全后台探索，遍历收集所有页面的上传点...")
 
             # Phase 1: 寻找带 Upload/上传 关键词的正向链接
