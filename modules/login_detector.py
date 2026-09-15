@@ -245,22 +245,9 @@ class LoginDetectorModule(BaseModule):
                 potential_login_links=[]
             )
 
-        # ── 啟動 Playwright 動態攔截 ──────────────────────────────
-        for f in features.get("forms", []):
-            action = f.get("action", "")
-            if not action or action == "#" or action == url:
-                # 判斷是否為密碼表單
-                has_password = any(inp.get("type", "").lower() == "password" for inp in f.get("inputs", []))
-                if has_password:
-                    print(f"  [Playwright] 發現空 action 的密碼表單，啟動動態攔截 (這可能需要幾秒鐘)...")
-                    interceptor = PlaywrightInterceptor(timeout_ms=PLAYWRIGHT_CRAWLER_TIMEOUT)
-                    real_url = interceptor.intercept_form_action(url)
-                    if real_url:
-                        print(f"  [✅ Playwright] 成功攔截到真實 AJAX 端點: {real_url}")
-                        f["action"] = real_url
-                        f["_playwright_note"] = "注意：此 action 原本為空，這是 Playwright 動態攔截到的真實 AJAX 提交位址！"
-                    break
-
+        # ── 登录页探测阶段不启动动态拦截 ──────────────────────────────
+        # 动态拦截（获取 AJAX 真实提交地址）应该在确认是登录页后，
+        # 在 SQL 注入测试阶段才执行，避免对每个候选 URL 都启动 Playwright。
 
         try:
             result: LoginDetectorResult = self._chain.invoke({
