@@ -34,6 +34,7 @@ from web_audit.core.playwright_interceptor import PlaywrightInterceptor
 from web_audit.config.settings import (
     CRAWLER_MAX_DEPTH,
     TOOL_DISCOVERY_ENABLED,
+    PLAYWRIGHT_CRAWLER_TIMEOUT,
 )
 
 
@@ -252,7 +253,7 @@ class LoginDetectorModule(BaseModule):
                 has_password = any(inp.get("type", "").lower() == "password" for inp in f.get("inputs", []))
                 if has_password:
                     print(f"  [Playwright] 發現空 action 的密碼表單，啟動動態攔截 (這可能需要幾秒鐘)...")
-                    interceptor = PlaywrightInterceptor(timeout_ms=10000)
+                    interceptor = PlaywrightInterceptor(timeout_ms=PLAYWRIGHT_CRAWLER_TIMEOUT)
                     real_url = interceptor.intercept_form_action(url)
                     if real_url:
                         print(f"  [✅ Playwright] 成功攔截到真實 AJAX 端點: {real_url}")

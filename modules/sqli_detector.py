@@ -16,7 +16,7 @@ from web_audit.modules.base_module import BaseModule
 from web_audit.core.requester import Requester
 from web_audit.core.parser import PageParser
 from web_audit.core.llm_factory import get_llm
-from web_audit.config.settings import DEBUG_MODE
+from web_audit.config.settings import DEBUG_MODE, PLAYWRIGHT_CRAWLER_TIMEOUT
 
 # ── Bypass Payloads ───────────────────────────────────────────
 # 精选的 SQL 注入身份认证绕过 Payload（全面兼容多种数据库、WAF 绕过与多种闭合场景）
@@ -278,7 +278,7 @@ class SQLiDetectorModule(BaseModule):
             if not raw_action or raw_action == "#" or action_url == url:
                 from web_audit.core.playwright_interceptor import PlaywrightInterceptor
                 print(f"  [Playwright] [AuthBypass] 發現疑似 AJAX 表單，啟動動態攔截獲取真實提交地址...")
-                interceptor = PlaywrightInterceptor(timeout_ms=10000)
+                interceptor = PlaywrightInterceptor(timeout_ms=PLAYWRIGHT_CRAWLER_TIMEOUT)
                 real_url = interceptor.intercept_form_action(url)
                 if real_url:
                     action_url = real_url

@@ -41,7 +41,7 @@ UPLOAD_MAX_PAGES = 100           # 登录成功后，最多安全遍历的后台
 PLAYWRIGHT_CRAWLER_ENABLED = True
 PLAYWRIGHT_CRAWLER_MAX_PAGES = 50     # 最多探索頁面數
 PLAYWRIGHT_CRAWLER_MAX_DEPTH = 3      # 最大點擊深度
-PLAYWRIGHT_CRAWLER_TIMEOUT = 10000    # 單頁等待超時（毫秒）
+PLAYWRIGHT_CRAWLER_TIMEOUT = 30000    # 單頁等待超時（毫秒）
 
 # ── 外部工具发现配置 ───────────────────────────────────────
 # 设为 True 时，在爬虫发现阶段额外调用外部工具扩大 URL 覆盖范围
