@@ -164,16 +164,17 @@ class Requester:
                 context.close()  # 只关闭上下文，不关闭浏览器
         except Exception as e:
             print(f"[Requester] Playwright 渲染失败 {url}: {e}，降级为 requests")
-            # 使用 HTTP 头部禁用缓存，而不是 URL 参数
-            original_headers = self.session.headers.copy()
-            self.session.headers.update({
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache"
-            })
-            resp = self.get(url)
-            # 恢复原始头部
-            self.session.headers.clear()
-            self.session.headers.update(original_headers)
+            # 直接传递 headers 参数，避免修改 session.headers 导致多线程竞态
+            resp = self.session.get(
+                url,
+                timeout=self.timeout,
+                verify=self.verify_ssl,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache"
+                }
+            )
+            resp.encoding = resp.apparent_encoding
             return resp.text if resp else None
 
     def fetch_network_resources(self, url: str) -> set:
