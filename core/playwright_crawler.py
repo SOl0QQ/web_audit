@@ -134,9 +134,6 @@ class PlaywrightSiteCrawler:
             context = self._build_browser_context(browser, start_url)
             page = context.new_page()
 
-            # 禁用瀏覽器緩存
-            page.route("**/*", lambda route: route.continue_())
-
             try:
                 while queue and pages_crawled < self.max_pages:
                     current_url, current_depth, referer_url = queue.popleft()

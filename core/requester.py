@@ -144,22 +144,18 @@ class Requester:
 
                 page = context.new_page()
 
-                # 强制禁用浏览器本地缓存
-                page.route("**/*", lambda route: route.continue_())
+                # 使用路由拦截禁用浏览器缓存（比 _cb=时间戳 更可靠）
+                def disable_cache(route):
+                    route.continue_(headers={
+                        **route.request.headers,
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache"
+                    })
+
+                page.route("**/*", disable_cache)
 
                 # networkidle: 网络连接数 < 2 持续 500ms，确保 JS 渲染完成
-                # 添加随机参数彻底打穿静态页面缓存
-                import time
-                import urllib.parse
-                parsed = urllib.parse.urlparse(url)
-                query = parsed.query
-                cb_param = f"_cb={int(time.time() * 1000)}"
-                new_query = f"{query}&{cb_param}" if query else cb_param
-                busting_url = urllib.parse.urlunparse((
-                    parsed.scheme, parsed.netloc, parsed.path,
-                    parsed.params, new_query, parsed.fragment
-                ))
-                page.goto(busting_url, wait_until="networkidle", timeout=self.timeout * 1000)
+                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
 
                 html = page.content()
                 print(f"[Requester] Playwright 渲染成功 (携带 Session 状态，强力防缓存): {url}")
@@ -168,17 +164,16 @@ class Requester:
                 context.close()  # 只关闭上下文，不关闭浏览器
         except Exception as e:
             print(f"[Requester] Playwright 渲染失败 {url}: {e}，降级为 requests")
-            import time
-            import urllib.parse
-            parsed = urllib.parse.urlparse(url)
-            query = parsed.query
-            cb_param = f"_cb={int(time.time() * 1000)}"
-            new_query = f"{query}&{cb_param}" if query else cb_param
-            busting_url = urllib.parse.urlunparse((
-                parsed.scheme, parsed.netloc, parsed.path,
-                parsed.params, new_query, parsed.fragment
-            ))
-            resp = self.get(busting_url)
+            # 使用 HTTP 头部禁用缓存，而不是 URL 参数
+            original_headers = self.session.headers.copy()
+            self.session.headers.update({
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache"
+            })
+            resp = self.get(url)
+            # 恢复原始头部
+            self.session.headers.clear()
+            self.session.headers.update(original_headers)
             return resp.text if resp else None
 
     def fetch_network_resources(self, url: str) -> set:
@@ -233,9 +228,7 @@ class Requester:
 
                 page = context.new_page()
 
-                # 设置网络请求监听器，并强制禁用浏览器本地缓存
-                page.route("**/*", lambda route: route.continue_())
-
+                # 设置网络请求监听器
                 def handle_request(request):
                     # 忽略直接导航到主页面的请求
                     if request.url != url:
@@ -243,11 +236,18 @@ class Requester:
 
                 page.on("request", handle_request)
 
+                # 使用路由拦截禁用浏览器缓存（比 _cb=时间戳 更可靠）
+                def disable_cache(route):
+                    route.continue_(headers={
+                        **route.request.headers,
+                        "Cache-Control": "no-cache, no-store, must-revalidate",
+                        "Pragma": "no-cache"
+                    })
+
+                page.route("**/*", disable_cache)
+
                 # 访问页面，等待网络空闲以确保异步请求都发出了
-                # 添加一个随机参数彻底打穿静态页面缓存
-                import time
-                busting_url = f"{url}?_cb={int(time.time() * 1000)}" if "?" not in url else f"{url}&_cb={int(time.time() * 1000)}"
-                page.goto(busting_url, wait_until="networkidle", timeout=self.timeout * 1000)
+                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
 
                 print(f"[Requester] Playwright 拦截完成，共捕获 {len(collected_urls)} 个网络请求")
                 return collected_urls
