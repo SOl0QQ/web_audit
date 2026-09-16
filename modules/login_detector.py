@@ -65,6 +65,49 @@ class LoginDetectorResult(BaseModel):
     )
 
 
+# ── 方案三：批量 LLM 判断模型 ────────────────────────────────────
+class BatchUrlFilterResult(BaseModel):
+    """批量 URL 筛选结果 - 仅根据 URL 路径特征快速判断"""
+    likely_login_urls: List[str] = Field(
+        description="最可能是登录页的 URL 列表（路径特征明显）",
+        default=[]
+    )
+    possible_login_urls: List[str] = Field(
+        description="可能是登录页的 URL 列表（需要进一步验证）",
+        default=[]
+    )
+    reason: str = Field(
+        description="筛选理由",
+        default=""
+    )
+
+
+# ── 方案三：批量 LLM 判断 Prompt ─────────────────────────────────
+BATCH_URL_FILTER_PROMPT = ChatPromptTemplate.from_messages([
+    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出可能是登录页的 URL。
+
+**高概率是登录页的特征**：
+- 路径包含: login, signin, sign-in, log-in, admin, portal, auth, member, account, user, manage, console, dashboard, cp, panel, backend, cms
+- 路径以 .php, .asp, .aspx, .jsp 结尾且包含上述关键词
+- 路径较短（1-2层）且语义明确
+
+**不太可能是登录页的特征**：
+- 路径是纯数字或无意义字符串
+- 路径包含: products, articles, blog, news, gallery, portfolio, contact, about, help, faq, terms, privacy
+- 路径过深（超过3层目录）
+- 明显的静态资源或 API 端点
+
+请从给定的 URL 列表中筛选出可能是登录页的 URL，分为两类：
+1. likely_login_urls: 高概率是登录页（路径特征非常明显）
+2. possible_login_urls: 可能是登录页（需要进一步验证）"""),
+    ("human", """请分析以下 URL 列表，筛选出可能是登录页的 URL：
+
+{urls}
+
+请返回结构化的筛选结果。""")
+])
+
+
 # ── LangChain Prompt ───────────────────────────────────────────
 LOGIN_DETECT_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """你是一个专业的网络安全和网页结构分析助手。
@@ -106,6 +149,8 @@ class LoginDetectorModule(BaseModule):
         super().__init__(requester)
         llm = get_llm()
         self._chain = LOGIN_DETECT_PROMPT | llm.with_structured_output(LoginDetectorResult)
+        # 方案三：批量 LLM 判断链
+        self._batch_chain = BATCH_URL_FILTER_PROMPT | llm.with_structured_output(BatchUrlFilterResult)
         self._tool_discovery = ToolDiscovery()
 
     # ── 公共入口 ────────────────────────────────────────────────
@@ -177,7 +222,15 @@ class LoginDetectorModule(BaseModule):
         print(f"{'─' * 50}")
 
         prioritized = self._prioritize_urls(candidate_urls)
-        return prioritized
+
+        # ── 方案三：批量 LLM 筛选 ──────────────────────────────────
+        # 在逐个验证之前，先用批量 LLM 快速筛选，减少后续验证次数
+        print(f"\n{'─' * 50}")
+        print(f"  [Layer 2] 批量 LLM 预筛选（减少后续逐个验证次数）")
+        print(f"{'─' * 50}")
+        batch_filtered = self.batch_filter_urls(prioritized)
+
+        return batch_filtered
 
     # ── Layer 2 辅助：关键词预排序 ──────────────────────────────
 
@@ -203,6 +256,84 @@ class LoginDetectorModule(BaseModule):
             print(f"  [Layer 2] 高优先样本: {high[:5]}")
 
         return high + low
+
+    # ── 方案三：批量 LLM URL 筛选 ─────────────────────────────────
+
+    def batch_filter_urls(self, urls: List[str], batch_size: int = 20) -> List[str]:
+        """
+        方案三：批量 LLM 判断 - 将多个 URL 打包发送给 LLM，快速筛选出可能是登录页的 URL。
+
+        优势：
+          - 之前：100 个 URL → 100 次 LLM 调用
+          - 之后：100 个 URL → 5 次 LLM 调用（每次 20 个）
+
+        Args:
+            urls: 候选 URL 列表
+            batch_size: 每批处理的 URL 数量
+
+        Returns:
+            经过 LLM 筛选后的候选 URL 列表（likely + possible）
+        """
+        if not urls:
+            return []
+
+        # 如果 URL 数量少于 batch_size，直接一批处理
+        if len(urls) <= batch_size:
+            return self._batch_llm_filter(urls)
+
+        # 分批处理
+        all_filtered: List[str] = []
+        total_batches = (len(urls) + batch_size - 1) // batch_size
+
+        for i in range(0, len(urls), batch_size):
+            batch = urls[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            print(f"\n  [批量筛选] 第 {batch_num}/{total_batches} 批 ({len(batch)} 个 URL)...")
+
+            filtered = self._batch_llm_filter(batch)
+            all_filtered.extend(filtered)
+
+        # 去重
+        seen: set = set()
+        deduped: List[str] = []
+        for u in all_filtered:
+            if u not in seen:
+                seen.add(u)
+                deduped.append(u)
+
+        print(f"\n  [批量筛选] 完成: {len(urls)} → {len(deduped)} 个候选 URL")
+        return deduped
+
+    def _batch_llm_filter(self, urls: List[str]) -> List[str]:
+        """
+        单批次 LLM 筛选 - 根据 URL 路径特征快速判断。
+        """
+        if not urls:
+            return []
+
+        # 构建 URL 列表字符串
+        urls_text = "\n".join(f"- {url}" for url in urls)
+
+        try:
+            result: BatchUrlFilterResult = self._batch_chain.invoke({
+                "urls": urls_text,
+            })
+
+            # 合并 likely 和 possible
+            filtered = result.likely_login_urls + result.possible_login_urls
+
+            print(f"  [批量筛选] likely={len(result.likely_login_urls)}, "
+                  f"possible={len(result.possible_login_urls)}, "
+                  f"排除={len(urls) - len(filtered)}")
+
+            if result.likely_login_urls:
+                print(f"  [批量筛选] 高概率登录页: {result.likely_login_urls[:5]}")
+
+            return filtered
+
+        except Exception as e:
+            print(f"  [批量筛选] ❌ LLM 调用失败: {e}，返回全部 URL")
+            return urls
 
     # ── Layer 2 辅助：单 URL LLM 判断 ───────────────────────────
 
