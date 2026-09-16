@@ -1593,10 +1593,17 @@ class UnifiedUploadAuditModule(BaseModule):
 
                 page = context.new_page()
 
+                # 提取主站域名用于过滤
+                target_domain = urllib.parse.urlparse(target_url).hostname or ""
+
                 # 定义网络请求拦截回调
                 def handle_response(response):
-                    """捕获所有响应 URL"""
+                    """捕获所有响应 URL，只保留同域名/子域名"""
                     url = response.url
+                    # 只保留同域名/子域名的请求，过滤第三方资源
+                    response_domain = urllib.parse.urlparse(url).hostname or ""
+                    if not (response_domain == target_domain or response_domain.endswith("." + target_domain)):
+                        return
                     # 排除一些明显的静态资源（框架、库等）
                     exclude_keywords = [
                         'jquery', 'bootstrap', 'sweetalert', 'datatables',
@@ -1671,10 +1678,17 @@ class UnifiedUploadAuditModule(BaseModule):
 
                 page = context.new_page()
 
+                # 提取主站域名用于过滤
+                target_domain = urllib.parse.urlparse(target_url).hostname or ""
+
                 # 定义网络请求拦截回调
                 def handle_response(response):
-                    """捕获所有响应 URL"""
+                    """捕获所有响应 URL，只保留同域名/子域名"""
                     url = response.url
+                    # 只保留同域名/子域名的请求，过滤第三方资源
+                    response_domain = urllib.parse.urlparse(url).hostname or ""
+                    if not (response_domain == target_domain or response_domain.endswith("." + target_domain)):
+                        return
                     # 排除一些明显的静态资源（框架、库等）
                     exclude_keywords = [
                         'jquery', 'bootstrap', 'sweetalert', 'datatables',

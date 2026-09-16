@@ -14,6 +14,7 @@ from web_audit.config.settings import (
     GOOGLE_API_KEY,
     OPENAI_API_KEY,
     OLLAMA_BASE_URL,
+    LLM_TIMEOUT,
 )
 
 
@@ -28,6 +29,7 @@ def get_llm() -> BaseChatModel:
             model=LLM_MODEL,
             api_key=GOOGLE_API_KEY,
             temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
         )
     elif LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
@@ -35,6 +37,7 @@ def get_llm() -> BaseChatModel:
             model=LLM_MODEL,
             api_key=OPENAI_API_KEY,
             temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
         )
     elif LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
@@ -42,6 +45,7 @@ def get_llm() -> BaseChatModel:
             model=LLM_MODEL,
             base_url=OLLAMA_BASE_URL,
             temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
             format="json",  # 強制返回 JSON 格式，對於本地模型的 Pydantic structured output 至關重要
         )
     else:

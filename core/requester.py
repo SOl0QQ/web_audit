@@ -229,11 +229,18 @@ class Requester:
 
                 page = context.new_page()
 
+                # 提取主站域名用于过滤
+                import urllib.parse
+                target_domain = urllib.parse.urlparse(url).hostname or ""
+
                 # 设置网络请求监听器
                 def handle_request(request):
-                    # 忽略直接导航到主页面的请求
-                    if request.url != url:
-                        collected_urls.add(request.url)
+                    # 只保留同域名/子域名的请求，过滤第三方资源
+                    request_domain = urllib.parse.urlparse(request.url).hostname or ""
+                    if request_domain and (request_domain == target_domain or request_domain.endswith("." + target_domain)):
+                        # 忽略直接导航到主页面的请求
+                        if request.url != url:
+                            collected_urls.add(request.url)
 
                 page.on("request", handle_request)
 

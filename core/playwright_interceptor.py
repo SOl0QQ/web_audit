@@ -46,13 +46,22 @@ class PlaywrightInterceptor:
 
                 page = context.new_page()
 
+                # 提取主站域名用于过滤
+                import urllib.parse
+                target_domain = urllib.parse.urlparse(target_url).hostname or ""
+
                 # 定义网络拦截回调
                 def handle_request(request):
                     nonlocal intercepted_url
+                    # 只保留同域名/子域名的请求，过滤第三方资源
+                    request_domain = urllib.parse.urlparse(request.url).hostname or ""
+                    if not (request_domain == target_domain or request_domain.endswith("." + target_domain)):
+                        return
+
                     # 如果发现页面发出了 POST 或 PUT 请求，记录下来
                     if request.method in ("POST", "PUT"):
-                        # 排除一些明显的静态资源和日志上报
-                        if not any(ext in request.url.lower() for ext in [".png", ".jpg", ".css", ".js", "google-analytics"]):
+                        # 排除一些明显的静态资源
+                        if not any(ext in request.url.lower() for ext in [".png", ".jpg", ".css", ".js"]):
                             print(f"      [Playwright] 拦截到网络请求: [{request.method}] {request.url} (类型: {request.resource_type})")
                             if not intercepted_url:
                                 intercepted_url = request.url
