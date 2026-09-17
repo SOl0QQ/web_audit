@@ -64,11 +64,13 @@ class UploadIdentifierModule(BaseModule):
             result["summary"] = "无法访问目标页面"
             return result
 
+        # 先创建 parser，后续逻辑都需要
+        parser = PageParser(resp.text, url)
+
         # 智能判定已登录状态：检查页面是否包含密码输入框
         # 如果没有密码框，说明不是登录页，视为已登录/后台可访问状态
         if not is_authenticated:
             if resp.status_code == 200:
-                # 使用已创建的 parser 检查表单
                 check_forms = parser.get_forms()
                 has_password_field = any(
                     inp.get("type", "").lower() == "password"
@@ -80,7 +82,6 @@ class UploadIdentifierModule(BaseModule):
                     print(f"  [UploadIdentifier] 自动探测到目标页面处于可用/已登录状态 (无密码表单)，激活后台全面遍历。")
 
         visited.add(url)
-        parser = PageParser(resp.text, url)
         forms = parser.get_upload_forms()
 
         # 如果静态 DOM 没查到上传框，尝试 Playwright 动态渲染（捕获 SPA/Vue/Dropzone 等组件）
