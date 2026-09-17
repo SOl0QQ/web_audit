@@ -84,27 +84,34 @@ class BatchUrlFilterResult(BaseModel):
 
 # ── 方案三：批量 LLM 判断 Prompt ─────────────────────────────────
 BATCH_URL_FILTER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出可能是登录页的 URL。
+    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出**明确是登录页**的 URL。
 
-**高概率是登录页的特征**：
-- 路径包含: login, signin, sign-in, log-in, admin, portal, auth, member, account, user, manage, console, dashboard, cp, panel, backend, cms
-- 路径以 .php, .asp, .aspx, .jsp 结尾且包含上述关键词
-- 路径较短（1-2层）且语义明确
+**必须严格判断，宁缺勿滥！**
 
-**不太可能是登录页的特征**：
-- 路径是纯数字或无意义字符串
-- 路径包含: products, articles, blog, news, gallery, portfolio, contact, about, help, faq, terms, privacy
-- 路径过深（超过3层目录）
-- 明显的静态资源或 API 端点
+**高概率是登录页的特征（必须同时满足多个）**：
+- 路径明确包含: login, signin, sign-in, log-in, wp-login, admin/login, user/login
+- 路径以 .php, .asp, .aspx, .jsp 结尾且包含 login/signin 关键词
+- 路径是 /admin, /manage, /console 等明确的后台入口
 
-请从给定的 URL 列表中筛选出可能是登录页的 URL，分为两类：
-1. likely_login_urls: 高概率是登录页（路径特征非常明显）
-2. possible_login_urls: 可能是登录页（需要进一步验证）"""),
-    ("human", """请分析以下 URL 列表，筛选出可能是登录页的 URL：
+**以下情况绝对不是登录页（必须排除）**：
+- 路径是注册页: register, signup, regis, join, create-account
+- 路径是账户页: account, profile, my-account, dashboard（除非明确是登录）
+- 路径是表单页: form, contact, inquiry, application
+- 路径是短路径或缩写: /cu, /p, /cp（除非明确是 login 缩写）
+- 路径是客户相关: customer, client, member（除非明确是登录入口）
+- 路径过深（超过2层目录）
+
+**判断原则**：
+- likely_login_urls: 只有路径明确包含 login/signin/admin 的才放入
+- possible_login_urls: 只有非常可疑的才放入，宁可漏掉也不要误报
+- 如果不确定，就不要放入任何列表
+
+请从给定的 URL 列表中筛选出**明确是登录页**的 URL。"""),
+    ("human", """请严格分析以下 URL 列表，只筛选出明确是登录页的 URL：
 
 {urls}
 
-请返回结构化的筛选结果。""")
+请返回结构化的筛选结果。记住：宁缺勿滥！""")
 ])
 
 
@@ -230,7 +237,14 @@ class LoginDetectorModule(BaseModule):
         print(f"{'─' * 50}")
         batch_filtered = self.batch_filter_urls(prioritized)
 
-        return batch_filtered
+        # ── 阶段2：HTML 特征检测（检查是否有密码框）──────────────────
+        # 登录页的核心特征是有密码输入框，这比 URL 路径可靠得多
+        print(f"\n{'─' * 50}")
+        print(f"  [Layer 2.5] HTML 特征检测（检查密码框）")
+        print(f"{'─' * 50}")
+        html_filtered = self.batch_check_password_field(batch_filtered)
+
+        return html_filtered
 
     # ── Layer 2 辅助：关键词预排序 ──────────────────────────────
 
@@ -334,6 +348,63 @@ class LoginDetectorModule(BaseModule):
         except Exception as e:
             print(f"  [批量筛选] ❌ LLM 调用失败: {e}，返回全部 URL")
             return urls
+
+    # ── 阶段2：HTML 特征检测（检查密码框）────────────────────────────
+
+    def batch_check_password_field(self, urls: List[str]) -> List[str]:
+        """
+        阶段2：HTML 特征检测 - 检查页面是否包含密码输入框。
+
+        登录页的核心特征是有 type="password" 的输入框，这比 URL 路径可靠得多。
+        只保留有密码框的 URL，大幅减少后续 LLM 调用次数。
+
+        Args:
+            urls: 候选 URL 列表
+
+        Returns:
+            包含密码框的 URL 列表
+        """
+        if not urls:
+            return []
+
+        filtered: List[str] = []
+        checked_count = 0
+
+        for url in urls:
+            checked_count += 1
+            try:
+                # 获取页面 HTML
+                resp = self.requester.get(url)
+                if not resp:
+                    print(f"  [HTML检测] {checked_count}/{len(urls)} {url} - 无法访问，跳过")
+                    continue
+
+                # 解析 HTML 检查密码框
+                parser = PageParser(resp.text, url)
+                forms = parser.get_forms()
+
+                has_password = False
+                for form in forms:
+                    inputs = form.get("inputs", [])
+                    for inp in inputs:
+                        if inp.get("type", "").lower() == "password":
+                            has_password = True
+                            break
+                    if has_password:
+                        break
+
+                if has_password:
+                    filtered.append(url)
+                    print(f"  [HTML检测] {checked_count}/{len(urls)} {url} - ✅ 有密码框")
+                else:
+                    print(f"  [HTML检测] {checked_count}/{len(urls)} {url} - ❌ 无密码框，排除")
+
+            except Exception as e:
+                print(f"  [HTML检测] {checked_count}/{len(urls)} {url} - ❌ 检测失败: {e}")
+                continue
+
+        print(f"\n  [HTML检测] 完成: {len(urls)} → {len(filtered)} 个包含密码框的 URL")
+        return filtered
 
     # ── Layer 2 辅助：单 URL LLM 判断 ───────────────────────────
 

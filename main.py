@@ -236,8 +236,8 @@ def run_pipeline(target_url: str, step: str = "all"):
                         print(f"  [系统拦截] 已有其他页面 Bypass 成功，提前退出当前任务。")
                         return
 
-                    if not llm_result or not llm_result.is_login_page or llm_result.confidence <= 0.8:
-                        print(f"  [判定失败] 不是登录页，丢弃。")
+                    if not llm_result or not llm_result.is_login_page or llm_result.confidence < 0.9:
+                        print(f"  [判定失败] 不是登录页 (confidence={llm_result.confidence if llm_result else 'N/A'}), 丢弃。")
                         return
                     print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
 

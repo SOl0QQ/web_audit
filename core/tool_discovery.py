@@ -433,6 +433,27 @@ class ToolDiscovery:
         # 最大路径深度（超过 3 层的排除）
         MAX_PATH_DEPTH = 3
 
+        # 非登录页关键词（路径中包含这些的直接排除）
+        NON_LOGIN_KEYWORDS = {
+            # 注册/账户类（不是登录页）
+            'register', 'signup', 'regis', 'join', 'create-account',
+            'account', 'profile', 'my-account', 'user-profile',
+            # 表单/联系类
+            'form', 'contact', 'inquiry', 'application', 'feedback',
+            # 客户类
+            'customer', 'client', 'member-area', 'membership',
+            # 内容类
+            'blog', 'article', 'news', 'post', 'page', 'category', 'tag',
+            'product', 'shop', 'cart', 'checkout', 'order',
+            # 帮助类
+            'help', 'faq', 'support', 'about', 'terms', 'privacy', 'policy',
+            # 媒体类
+            'gallery', 'portfolio', 'image', 'photo', 'video',
+        }
+
+        # 短路径黑名单（太短的路径通常是缩写或误判）
+        SHORT_PATH_BLACKLIST = {'/cu', '/p', '/cp', '/c', '/m', '/u', '/a', '/s'}
+
         filtered: List[str] = []
         excluded_count = 0
 
@@ -456,9 +477,18 @@ class ToolDiscovery:
                 continue
 
             # 规则 4：检查路径深度（排除过深路径）
-            # 去掉开头的 / 和结尾的 /，然后按 / 分割
             path_parts = [p for p in path.strip('/').split('/') if p]
             if len(path_parts) > MAX_PATH_DEPTH:
+                excluded_count += 1
+                continue
+
+            # 规则 5：检查非登录页关键词
+            if any(keyword in path for keyword in NON_LOGIN_KEYWORDS):
+                excluded_count += 1
+                continue
+
+            # 规则 6：检查短路径黑名单
+            if path.rstrip('/') in SHORT_PATH_BLACKLIST:
                 excluded_count += 1
                 continue
 
