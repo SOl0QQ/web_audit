@@ -196,6 +196,7 @@ class LoginDetectorModule(BaseModule):
 
         # 1. 安全加固：确保 candidate_urls 中没有缺少 scheme 的裸域名
         # 2. 跨域过滤：排除与起始域名不一致的外部链接
+        # 3. URL 清理：修复错误的 URL 拼接
         import urllib.parse
         start_parsed = urllib.parse.urlparse(start_url)
         start_domain = start_parsed.hostname or ""
@@ -205,17 +206,29 @@ class LoginDetectorModule(BaseModule):
             c = c.strip()
             if not c:
                 continue
+
+            # 清理 URL 中的反斜杠（%5C 或 \）
+            c = c.replace('%5C', '/').replace('\\', '/')
+
+            # 修复错误的 URL 拼接（如 https://domain.com/https://domain.com/path）
+            # 如果路径中包含完整的 URL，提取正确的部分
+            if 'http://' in c or 'https://' in c:
+                # 找到最后一个 http:// 或 https://
+                last_http_idx = max(c.rfind('http://'), c.rfind('https://'))
+                if last_http_idx > 0:
+                    c = c[last_http_idx:]
+
             if not c.startswith("http://") and not c.startswith("https://"):
                 c = "http://" + c
-            
+
             c_parsed = urllib.parse.urlparse(c)
             c_domain = c_parsed.hostname or ""
-            
+
             # 放宽跨域检测：只要主域名互相包含（例如 www.btec.ac.th 和 btec.ac.th）就视为同站
             if c_domain and start_domain:
                 if start_domain not in c_domain and c_domain not in start_domain:
                     continue
-                
+
             from web_audit.core.parser import PageParser
             if PageParser.is_static_resource(c):
                 continue
