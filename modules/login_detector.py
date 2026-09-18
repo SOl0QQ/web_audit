@@ -198,6 +198,7 @@ class LoginDetectorModule(BaseModule):
         # 2. 跨域过滤：排除与起始域名不一致的外部链接
         # 3. URL 清理：修复错误的 URL 拼接
         import urllib.parse
+        import re
         start_parsed = urllib.parse.urlparse(start_url)
         start_domain = start_parsed.hostname or ""
 
@@ -208,15 +209,46 @@ class LoginDetectorModule(BaseModule):
                 continue
 
             # 清理 URL 中的反斜杠（%5C 或 \）
+            original_c = c
             c = c.replace('%5C', '/').replace('\\', '/')
 
-            # 修复错误的 URL 拼接（如 https://domain.com/https://domain.com/path）
-            # 如果路径中包含完整的 URL，提取正确的部分
+            # 修复错误的 URL 拼接
+            # 情况1: 路径中包含完整的 URL（如 https://domain.com/https://domain.com/path）
             if 'http://' in c or 'https://' in c:
                 # 找到最后一个 http:// 或 https://
                 last_http_idx = max(c.rfind('http://'), c.rfind('https://'))
                 if last_http_idx > 0:
                     c = c[last_http_idx:]
+
+            # 情况2: 路径中包含重复的域名（如 https://domain.com//domain.com/path）
+            # 解析 URL 并检查路径
+            c_parsed = urllib.parse.urlparse(c)
+            c_domain = c_parsed.hostname or ""
+            c_path = c_parsed.path
+
+            if c_domain and c_path:
+                # 检查路径中是否包含域名（错误拼接的标志）
+                if c_domain in c_path:
+                    # 找到路径中最后一个域名出现的位置
+                    last_domain_idx = c_path.rfind(c_domain)
+                    # 提取域名之后的部分
+                    after_domain = c_path[last_domain_idx + len(c_domain):]
+                    # 清理路径中的多个连续斜杠为单个斜杠
+                    after_domain = re.sub(r'/+', '/', after_domain)
+                    # 确保路径以 / 开头
+                    if not after_domain.startswith('/'):
+                        after_domain = '/' + after_domain
+                    # 重新构建 URL
+                    c = f"{c_parsed.scheme}://{c_domain}{after_domain}"
+                    if original_c != c:
+                        print(f"  [URL修复] {original_c} → {c}")
+                else:
+                    # 即使没有重复域名，也清理路径中的多个连续斜杠
+                    clean_path = re.sub(r'/+', '/', c_path)
+                    new_c = f"{c_parsed.scheme}://{c_domain}{clean_path}"
+                    if new_c != c:
+                        print(f"  [URL修复] {c} → {new_c}")
+                        c = new_c
 
             if not c.startswith("http://") and not c.startswith("https://"):
                 c = "http://" + c
