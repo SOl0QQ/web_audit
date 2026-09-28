@@ -39,6 +39,52 @@ from web_audit.config.settings import (
 )
 
 
+def _normalize_url(url: str) -> str:
+    """
+    规范化 URL，修复工具提取时可能产生的错误。
+
+    处理以下情况：
+    1. 反斜杠（%5C 或 \）替换为正斜杠
+    2. 路径中包含重复的域名（如 https://domain.com//domain.com/path）
+    3. 路径中包含完整的 URL（如 https://domain.com/https://domain.com/path）
+    4. 多个连续斜杠合并为单个
+    """
+    # 1. 清理反斜杠（%5C 或 \）
+    url = url.replace('%5C', '/').replace('\\', '/')
+
+    # 2. 处理路径中包含完整 URL 的情况
+    if 'http://' in url or 'https://' in url:
+        # 找到最后一个 http:// 或 https://
+        last_http_idx = max(url.rfind('http://'), url.rfind('https://'))
+        if last_http_idx > 0:
+            url = url[last_http_idx:]
+
+    # 3. 解析并修复路径
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname and parsed.path:
+        path = parsed.path
+
+        # 检查路径中是否包含域名（错误拼接的标志）
+        if parsed.hostname in path:
+            # 找到路径中最后一个域名出现的位置
+            last_domain_idx = path.rfind(parsed.hostname)
+            # 提取域名之后的部分
+            after_domain = path[last_domain_idx + len(parsed.hostname):]
+            # 清理多个连续斜杠
+            after_domain = re.sub(r'/+', '/', after_domain)
+            # 确保路径以 / 开头
+            if not after_domain.startswith('/'):
+                after_domain = '/' + after_domain
+            # 重新构建 URL
+            url = f"{parsed.scheme}://{parsed.hostname}{after_domain}"
+        else:
+            # 即使没有重复域名，也清理路径中的多个连续斜杠
+            clean_path = re.sub(r'/+', '/', path)
+            url = f"{parsed.scheme}://{parsed.hostname}{clean_path}"
+
+    return url
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Katana 爬虫封装
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -119,9 +165,12 @@ class KatanaRunner:
                     with open(tmp_path, "r", errors="ignore") as f:
                         for line in f:
                             line = line.strip()
-                            if line.startswith("http") and line not in seen:
-                                seen.add(line)
-                                urls.append(line)
+                            if line.startswith("http"):
+                                # 规范化 URL（修复反斜杠、重复域名等）
+                                line = _normalize_url(line)
+                                if line not in seen:
+                                    seen.add(line)
+                                    urls.append(line)
                 if proc.poll() is not None:
                     break   # 进程已自然退出
 
@@ -140,9 +189,12 @@ class KatanaRunner:
                 with open(tmp_path, "r", errors="ignore") as f:
                     for line in f:
                         line = line.strip()
-                        if line.startswith("http") and line not in seen:
-                            seen.add(line)
-                            urls.append(line)
+                        if line.startswith("http"):
+                            # 规范化 URL（修复反斜杠、重复域名等）
+                            line = _normalize_url(line)
+                            if line not in seen:
+                                seen.add(line)
+                                urls.append(line)
                 _os.unlink(tmp_path)   # 清理临时文件
 
             if timed_out:
@@ -269,6 +321,8 @@ class DirsearchRunner:
 
             status_code = match.group(1)
             discovered_url = match.group(2).rstrip("/")
+            # 规范化 URL（修复反斜杠、重复域名等）
+            discovered_url = _normalize_url(discovered_url)
 
             # 方案四：解析响应体大小
             size_match = re.search(r"(\d+)([KMG]?B)\s+-", line)
@@ -306,6 +360,8 @@ class DirsearchRunner:
                 if redirect_match:
                     redirect_path = redirect_match.group(1)
                     redirect_url = urllib.parse.urljoin(base + "/", redirect_path.lstrip("/"))
+                    # 规范化 URL（修复反斜杠、重复域名等）
+                    redirect_url = _normalize_url(redirect_url)
                     if redirect_url not in seen:
                         seen.add(redirect_url)
                         urls.append(redirect_url)
