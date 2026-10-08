@@ -318,11 +318,13 @@ class UploadIdentifierModule(BaseModule):
                             "base_url": source,
                             "js_sources": combined_js
                         })
-                        if infer_result and infer_result.real_url:
+                        if infer_result and infer_result.real_url and self._is_valid_action_url(infer_result.real_url):
                             action_url = urllib.parse.urljoin(source, infer_result.real_url)
                             method = infer_result.method.lower()
                             print(f"  [UploadIdentifier] 🎯 提取到真实上传接口: {action_url}")
                             form["action"] = action_url
+                        elif infer_result and infer_result.real_url:
+                            print(f"  [UploadIdentifier] ⚠️ LLM 返回无效的 URL，已跳过: {infer_result.real_url}")
                     except Exception as e:
                         print(f"  [UploadIdentifier] AJAX 接口推断失败: {e}")
             file_inputs = [
@@ -374,6 +376,39 @@ class UploadIdentifierModule(BaseModule):
             print(f"{'─' * 60}\n")
 
         return result
+
+    @staticmethod
+    def _is_valid_action_url(url: str) -> bool:
+        """验证 LLM 返回的 action URL 是否有效，过滤错误信息。
+
+        LLM 推断失败时可能返回错误信息（如 "Not found in provided source"），
+        而不是真实的 URL。此方法用于检测并过滤这些无效值。
+        """
+        if not url or not url.strip():
+            return False
+
+        url_lower = url.strip().lower()
+
+        # 1. 过滤包含常见错误信息的返回值
+        error_keywords = [
+            "not found", "unable to", "cannot find", "could not find",
+            "no url", "no endpoint", "not specified", "unknown",
+            "error", "failed", "invalid", "none",
+        ]
+        if any(kw in url_lower for kw in error_keywords):
+            return False
+
+        # 2. 检查是否看起来像有效的 URL 路径
+        # 有效路径通常包含 / 或 . 或 = 等 URL 特征字符
+        has_url_chars = any(c in url for c in ['/', '.', '=', '?', '&'])
+        if not has_url_chars:
+            return False
+
+        # 3. 长度限制：错误信息通常较长，有效路径相对简短
+        if len(url) > 200:
+            return False
+
+        return True
 
     def _extract_upload_candidate_links(self, parser: PageParser) -> List[Dict[str, str]]:
         """从页面中提取可能包含文件上传的菜单链接。"""
