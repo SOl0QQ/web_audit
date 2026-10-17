@@ -164,7 +164,26 @@ def run_pipeline(target_url: str, step: str = "all"):
     print(f"  [System] 正在探测目标连通性与重定向...")
     # 允许 requests 自动追踪所有的重定向链 (allow_redirects=True 是默认的)
     init_resp = requester.get(target_url, allow_redirects=True)
-    
+
+    # 协议切换：如果初始请求失败，自动尝试另一个协议
+    if not init_resp:
+        import urllib.parse
+        parsed = urllib.parse.urlparse(target_url)
+        if parsed.scheme == "http":
+            alt_url = "https://" + parsed.netloc + parsed.path
+            print(f"  [System] HTTP 不可达，尝试 HTTPS: {alt_url}")
+            init_resp = requester.get(alt_url, allow_redirects=True)
+            if init_resp:
+                target_url = alt_url
+                print(f"  [System] ✅ HTTPS 可达，切换到 HTTPS")
+        elif parsed.scheme == "https":
+            alt_url = "http://" + parsed.netloc + parsed.path
+            print(f"  [System] HTTPS 不可达，尝试 HTTP: {alt_url}")
+            init_resp = requester.get(alt_url, allow_redirects=True)
+            if init_resp:
+                target_url = alt_url
+                print(f"  [System] ✅ HTTP 可达，切换到 HTTP")
+
     if init_resp and init_resp.history:
         # history 包含了所有的重定向过程，init_resp.url 是最终落地页
         print(f"  [System] 检测到目标发生了 {len(init_resp.history)} 次 HTTP 重定向:")

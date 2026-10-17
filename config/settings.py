@@ -13,7 +13,7 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 LLM_MODEL = "gemma4-31b-gpu"             # 若有其他本地模型（如 qwen2），可在此修改
 LLM_TEMPERATURE = 0.0
-OLLAMA_BASE_URL = "http://192.168.1.52:1234"
+OLLAMA_BASE_URL = "http://10.20.0.100:1234"
 LLM_TIMEOUT = 120                # LLM 请求超时秒数（31B 模型推理较慢，建议 120+）
 
 # ── HTTP 请求配置 ──────────────────────────────────────────
