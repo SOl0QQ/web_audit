@@ -199,6 +199,7 @@ class LoginDetectorModule(BaseModule):
         import urllib.parse
         start_parsed = urllib.parse.urlparse(start_url)
         start_domain = start_parsed.hostname or ""
+        start_scheme = start_parsed.scheme or "http"  # 继承起始 URL 的协议
 
         safe_candidates = []
         for c in candidate_urls:
@@ -206,7 +207,7 @@ class LoginDetectorModule(BaseModule):
             if not c:
                 continue
             if not c.startswith("http://") and not c.startswith("https://"):
-                c = "http://" + c
+                c = f"{start_scheme}://" + c  # 使用起始 URL 的协议
 
             c_parsed = urllib.parse.urlparse(c)
             c_domain = c_parsed.hostname or ""

@@ -125,9 +125,29 @@ def run_pipeline(target_url: str, step: str = "all"):
         target_url: 目标网站的起始 URL（不需要是登录页）
         step: 指定执行的模块 ("all", "login", "sqli", "upload_id", "upload_audit")
     """
-    # 全局防御性修复：确保 target_url 始终带有 http:// 协议前缀
+    # 协议自动探测：当 URL 没有协议前缀时，先尝试 HTTPS，失败再尝试 HTTP
     if target_url and not target_url.startswith("http://") and not target_url.startswith("https://"):
-        target_url = "http://" + target_url
+        print(f"  [System] 目标 URL 缺少协议前缀，正在自动探测可用协议...")
+        requester_probe = Requester()
+        # 先尝试 HTTPS（现代网站大多默认 HTTPS）
+        https_url = "https://" + target_url
+        print(f"  [System] 尝试 HTTPS: {https_url}")
+        probe_resp = requester_probe.get(https_url, allow_redirects=True)
+        if probe_resp:
+            target_url = https_url
+            print(f"  [System] ✅ HTTPS 可达，使用 HTTPS 协议")
+        else:
+            # HTTPS 失败，尝试 HTTP
+            http_url = "http://" + target_url
+            print(f"  [System] HTTPS 不可达，尝试 HTTP: {http_url}")
+            probe_resp = requester_probe.get(http_url, allow_redirects=True)
+            if probe_resp:
+                target_url = http_url
+                print(f"  [System] ✅ HTTP 可达，使用 HTTP 协议")
+            else:
+                # 都失败，默认使用 HTTP（后续会报错）
+                target_url = http_url
+                print(f"  [System] ⚠️ HTTP 和 HTTPS 均不可达，默认使用 HTTP 继续")
 
     pipeline_start_time = time.time()
     print(f"\n{'=' * 60}")
