@@ -3,6 +3,7 @@
 
 统一管理 LangChain LLM 实例的创建，支持多 Provider 切换（Google / OpenAI / Ollama）。
 """
+import time
 from typing import Type
 from pydantic import BaseModel
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -16,6 +17,7 @@ from web_audit.config.settings import (
     OLLAMA_BASE_URL,
     LLM_TIMEOUT,
 )
+from web_audit.core.performance_monitor import get_perf_monitor
 
 
 def get_llm() -> BaseChatModel:
@@ -25,7 +27,7 @@ def get_llm() -> BaseChatModel:
     """
     if LLM_PROVIDER == "google":
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
+        llm = ChatGoogleGenerativeAI(
             model=LLM_MODEL,
             api_key=GOOGLE_API_KEY,
             temperature=LLM_TEMPERATURE,
@@ -33,7 +35,7 @@ def get_llm() -> BaseChatModel:
         )
     elif LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
+        llm = ChatOpenAI(
             model=LLM_MODEL,
             api_key=OPENAI_API_KEY,
             temperature=LLM_TEMPERATURE,
@@ -41,7 +43,7 @@ def get_llm() -> BaseChatModel:
         )
     elif LLM_PROVIDER == "ollama":
         from langchain_ollama import ChatOllama
-        return ChatOllama(
+        llm = ChatOllama(
             model=LLM_MODEL,
             base_url=OLLAMA_BASE_URL,
             temperature=LLM_TEMPERATURE,
@@ -50,6 +52,34 @@ def get_llm() -> BaseChatModel:
         )
     else:
         raise ValueError(f"不支持的 LLM_PROVIDER: {LLM_PROVIDER}")
+
+    # 包装 invoke 方法以记录性能
+    original_invoke = llm.invoke
+    def timed_invoke(*args, **kwargs):
+        start = time.time()
+        try:
+            result = original_invoke(*args, **kwargs)
+            duration = time.time() - start
+            get_perf_monitor().record_llm(
+                operation="invoke",
+                duration=duration,
+                success=True,
+                model=LLM_MODEL
+            )
+            return result
+        except Exception as e:
+            duration = time.time() - start
+            get_perf_monitor().record_llm(
+                operation="invoke",
+                duration=duration,
+                success=False,
+                error=str(e),
+                model=LLM_MODEL
+            )
+            raise
+
+    llm.invoke = timed_invoke
+    return llm
 
 
 def get_structured_llm(schema: Type[BaseModel]) -> Runnable:

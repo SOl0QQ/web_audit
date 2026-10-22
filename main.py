@@ -26,6 +26,7 @@ from web_audit.modules.upload_auditor import UploadIdentifierModule
 from web_audit.reports.reporter import Reporter
 
 from web_audit.core.logger import init_global_logger, thread_safe_logger
+from web_audit.core.performance_monitor import get_perf_monitor
 
 def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_bypass_event=None):
     """执行 SQLi 和 文件上传的单链攻击"""
@@ -44,7 +45,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_b
         from web_audit.modules.sqli_detector import SQLiDetectorModule
         sqli_module = SQLiDetectorModule(requester)
         t0 = time.time()
-        sqli_result = sqli_module.run(analysis_url)
+        sqli_result = sqli_module.run_with_timing(analysis_url, context={})
         sqli_result['execution_time_seconds'] = round(time.time() - t0, 2)
         reporter.add_result(analysis_url, sqli_result)
 
@@ -79,7 +80,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_b
         from web_audit.modules.upload_auditor import UploadIdentifierModule
         upload_id_module = UploadIdentifierModule(requester)
         t0 = time.time()
-        upload_id_result = upload_id_module.run(
+        upload_id_result = upload_id_module.run_with_timing(
             upload_scan_url,
             context={"is_authenticated": is_authenticated}
         )
@@ -94,7 +95,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_b
         
         if upload_id_result and upload_id_result.get("findings"):
             t0 = time.time()
-            audit_result = unified_upload_module.run(
+            audit_result = unified_upload_module.run_with_timing(
                 upload_scan_url,
                 context={"upload_forms": upload_id_result["findings"]}
             )
@@ -107,7 +108,7 @@ def run_attack_chain(analysis_url: str, requester, reporter, step: str, global_b
                 "action_url": analysis_url,
                 "file_input_names": ["file"]
             }
-            audit_result = unified_upload_module.run(
+            audit_result = unified_upload_module.run_with_timing(
                 analysis_url,
                 context={"upload_forms": [dummy_form]}
             )
@@ -150,6 +151,11 @@ def run_pipeline(target_url: str, step: str = "all"):
                 print(f"  [System] ⚠️ HTTP 和 HTTPS 均不可达，默认使用 HTTP 继续")
 
     pipeline_start_time = time.time()
+
+    # 启动性能监控
+    perf_monitor = get_perf_monitor()
+    perf_monitor.start_audit(target_url)
+
     print(f"\n{'=' * 60}")
     print(f"  Web 安全审计流水线启动")
     print(f"  目标: {target_url}")
@@ -242,7 +248,7 @@ def run_pipeline(target_url: str, step: str = "all"):
             print("\n[Step 1/4] 登录页面初步挖掘 (流式扫描启动)")
             print("-" * 40)
             t0 = time.time()
-            login_result = login_module.run(target_url)
+            login_result = login_module.run_with_timing(target_url, context={})
             login_result['execution_time_seconds'] = round(time.time() - t0, 2)
             reporter.add_global_result(login_result)
 
@@ -318,6 +324,12 @@ def run_pipeline(target_url: str, step: str = "all"):
                 print("  [System] 递归爬虫也未能找到登录页，流水线终止。")
 
     finally:
+        # 保存性能报告
+        try:
+            perf_monitor.save_report("/tmp/performance_report.json")
+        except Exception as e:
+            print(f"\n[性能监控] 保存报告失败: {e}")
+
         requester.close()
         # 关闭 Playwright 浏览器池（如果使用了的话）
         try:

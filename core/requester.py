@@ -8,6 +8,7 @@
 - 超时与错误处理
 - Playwright 渲染（处理 SPA/JS 动态页面），自动降级为 requests
 """
+import time
 import urllib3
 import requests
 from requests import Response
@@ -17,6 +18,7 @@ from web_audit.config.settings import (
     REQUEST_VERIFY_SSL,
     REQUEST_HEADERS,
 )
+from web_audit.core.performance_monitor import get_perf_monitor
 
 # 全局禁用 InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -55,25 +57,59 @@ class Requester:
 
     def get(self, url: str, **kwargs) -> Optional[Response]:
         """发送 GET 请求，返回 Response 或 None（出错时）。"""
+        start = time.time()
         try:
             resp = self.session.get(
                 url, timeout=self.timeout, verify=self.verify_ssl, **kwargs
             )
+            duration = time.time() - start
             resp.encoding = resp.apparent_encoding
+            get_perf_monitor().record_http(
+                method="GET",
+                url=url,
+                duration=duration,
+                status_code=resp.status_code,
+                success=True
+            )
             return resp
         except Exception as e:
+            duration = time.time() - start
+            get_perf_monitor().record_http(
+                method="GET",
+                url=url,
+                duration=duration,
+                success=False,
+                error=str(e)
+            )
             print(f"[Requester] GET 失败 {url}: {e}")
             return None
 
     def post(self, url: str, data: Any = None, **kwargs) -> Optional[Response]:
         """发送 POST 请求，返回 Response 或 None（出错时）。"""
+        start = time.time()
         try:
             resp = self.session.post(
                 url, data=data, timeout=self.timeout, verify=self.verify_ssl, **kwargs
             )
+            duration = time.time() - start
             resp.encoding = resp.apparent_encoding
+            get_perf_monitor().record_http(
+                method="POST",
+                url=url,
+                duration=duration,
+                status_code=resp.status_code,
+                success=True
+            )
             return resp
         except Exception as e:
+            duration = time.time() - start
+            get_perf_monitor().record_http(
+                method="POST",
+                url=url,
+                duration=duration,
+                success=False,
+                error=str(e)
+            )
             print(f"[Requester] POST 失败 {url}: {e}")
             return None
 
