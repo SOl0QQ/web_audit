@@ -4,10 +4,11 @@
 统一管理 LangChain LLM 实例的创建，支持多 Provider 切换（Google / OpenAI / Ollama）。
 """
 import time
-from typing import Type
+from typing import Type, Any, Dict
 from pydantic import BaseModel
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import Runnable
+from langchain_core.callbacks import BaseCallbackHandler
 from web_audit.config.settings import (
     LLM_PROVIDER,
     LLM_MODEL,
@@ -20,66 +21,90 @@ from web_audit.config.settings import (
 from web_audit.core.performance_monitor import get_perf_monitor
 
 
-def get_llm() -> BaseChatModel:
-    """
-    根据配置返回对应的 LangChain Chat LLM 实例。
-    支持：google (Gemini) | openai (GPT) | ollama (本地模型)
-    """
-    if LLM_PROVIDER == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        llm = ChatGoogleGenerativeAI(
-            model=LLM_MODEL,
-            api_key=GOOGLE_API_KEY,
-            temperature=LLM_TEMPERATURE,
-            timeout=LLM_TIMEOUT,
-        )
-    elif LLM_PROVIDER == "openai":
-        from langchain_openai import ChatOpenAI
-        llm = ChatOpenAI(
-            model=LLM_MODEL,
-            api_key=OPENAI_API_KEY,
-            temperature=LLM_TEMPERATURE,
-            timeout=LLM_TIMEOUT,
-        )
-    elif LLM_PROVIDER == "ollama":
-        from langchain_ollama import ChatOllama
-        llm = ChatOllama(
-            model=LLM_MODEL,
-            base_url=OLLAMA_BASE_URL,
-            temperature=LLM_TEMPERATURE,
-            timeout=LLM_TIMEOUT,
-            format="json",  # 強制返回 JSON 格式，對於本地模型的 Pydantic structured output 至關重要
-        )
-    else:
-        raise ValueError(f"不支持的 LLM_PROVIDER: {LLM_PROVIDER}")
+class PerformanceCallbackHandler(BaseCallbackHandler):
+    """LLM 性能监控回调处理器"""
 
-    # 包装 invoke 方法以记录性能
-    original_invoke = llm.invoke
-    def timed_invoke(*args, **kwargs):
-        start = time.time()
-        try:
-            result = original_invoke(*args, **kwargs)
-            duration = time.time() - start
+    def __init__(self):
+        self._start_times = {}
+
+    def on_llm_start(self, serialized: Dict[str, Any], prompts, **kwargs):
+        """LLM 调用开始时记录"""
+        run_id = kwargs.get('run_id')
+        if run_id:
+            self._start_times[str(run_id)] = time.time()
+
+    def on_llm_end(self, response, **kwargs):
+        """LLM 调用结束时记录性能"""
+        run_id = kwargs.get('run_id')
+        if run_id and str(run_id) in self._start_times:
+            duration = time.time() - self._start_times[str(run_id)]
+            del self._start_times[str(run_id)]
+
             get_perf_monitor().record_llm(
                 operation="invoke",
                 duration=duration,
                 success=True,
                 model=LLM_MODEL
             )
-            return result
-        except Exception as e:
-            duration = time.time() - start
+
+    def on_llm_error(self, error: Exception, **kwargs):
+        """LLM 调用出错时记录"""
+        run_id = kwargs.get('run_id')
+        if run_id and str(run_id) in self._start_times:
+            duration = time.time() - self._start_times[str(run_id)]
+            del self._start_times[str(run_id)]
+
             get_perf_monitor().record_llm(
                 operation="invoke",
                 duration=duration,
                 success=False,
-                error=str(e),
+                error=str(error),
                 model=LLM_MODEL
             )
-            raise
 
-    llm.invoke = timed_invoke
-    return llm
+
+# 全局回调处理器实例
+_perf_callback = PerformanceCallbackHandler()
+
+
+def get_llm() -> BaseChatModel:
+    """
+    根据配置返回对应的 LangChain Chat LLM 实例。
+    支持：google (Gemini) | openai (GPT) | ollama (本地模型)
+    """
+    # 添加性能监控回调
+    callbacks = [_perf_callback]
+
+    if LLM_PROVIDER == "google":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=LLM_MODEL,
+            api_key=GOOGLE_API_KEY,
+            temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
+            callbacks=callbacks,
+        )
+    elif LLM_PROVIDER == "openai":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=LLM_MODEL,
+            api_key=OPENAI_API_KEY,
+            temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
+            callbacks=callbacks,
+        )
+    elif LLM_PROVIDER == "ollama":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(
+            model=LLM_MODEL,
+            base_url=OLLAMA_BASE_URL,
+            temperature=LLM_TEMPERATURE,
+            timeout=LLM_TIMEOUT,
+            format="json",  # 強制返回 JSON 格式，對於本地模型的 Pydantic structured output 至關重要
+            callbacks=callbacks,
+        )
+    else:
+        raise ValueError(f"不支持的 LLM_PROVIDER: {LLM_PROVIDER}")
 
 
 def get_structured_llm(schema: Type[BaseModel]) -> Runnable:
