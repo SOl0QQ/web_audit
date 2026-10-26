@@ -84,34 +84,33 @@ class BatchUrlFilterResult(BaseModel):
 
 # ── 方案三：批量 LLM 判断 Prompt ─────────────────────────────────
 BATCH_URL_FILTER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出**明确是登录页**的 URL。
+    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出**可能是登录页或后台入口**的 URL。
 
-**必须严格判断，宁缺勿滥！**
+**判断标准（宽松模式，宁可多保留也不要漏掉）**：
 
-**高概率是登录页的特征（必须同时满足多个）**：
-- 路径明确包含: login, signin, sign-in, log-in, wp-login, admin/login, user/login
-- 路径以 .php, .asp, .aspx, .jsp 结尾且包含 login/signin 关键词
-- 路径是 /admin, /manage, /console 等明确的后台入口
+**高概率是登录页/后台入口的特征（满足任一即可）**：
+- 路径包含: login, signin, sign-in, log-in, wp-login
+- 路径包含: admin, manage, console, dashboard, backend
+- 路径是后台目录: /admin/, /wp-admin/, /manage/, /console/
+- 路径以 .php, .asp, .aspx, .jsp 结尾且包含 admin/login 关键词
+- 路径包含: auth, oauth, sso, portal, member, user
 
-**以下情况绝对不是登录页（必须排除）**：
-- 路径是注册页: register, signup, regis, join, create-account
-- 路径是账户页: account, profile, my-account, dashboard（除非明确是登录）
-- 路径是表单页: form, contact, inquiry, application
-- 路径是短路径或缩写: /cu, /p, /cp（除非明确是 login 缩写）
-- 路径是客户相关: customer, client, member（除非明确是登录入口）
-- 路径过深（超过2层目录）
+**以下情况不是登录页（必须排除）**：
+- 路径明确是注册页: register, signup, regis, join, create-account
+- 路径明确是静态资源: .css, .js, .jpg, .png, .gif, .svg
+- 路径明确是 API 端点（不含 admin）: /api/, /ajax/, /rest/
 
 **判断原则**：
-- likely_login_urls: 只有路径明确包含 login/signin/admin 的才放入
-- possible_login_urls: 只有非常可疑的才放入，宁可漏掉也不要误报
-- 如果不确定，就不要放入任何列表
+- likely_login_urls: 路径明确包含 login/signin/wp-login 的
+- possible_login_urls: 路径包含 admin/manage/console 等后台关键词的
+- 如果不确定，放入 possible_login_urls，后续会进一步验证
 
-请从给定的 URL 列表中筛选出**明确是登录页**的 URL。"""),
-    ("human", """请严格分析以下 URL 列表，只筛选出明确是登录页的 URL：
+请从给定的 URL 列表中筛选出**可能是登录页或后台入口**的 URL。"""),
+    ("human", """请分析以下 URL 列表，筛选出可能是登录页或后台入口的 URL：
 
 {urls}
 
-请返回结构化的筛选结果。记住：宁缺勿滥！""")
+请返回结构化的筛选结果。记住：宁可多保留，后续会进一步验证！""")
 ])
 
 
