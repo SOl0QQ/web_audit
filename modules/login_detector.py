@@ -184,6 +184,13 @@ class LoginDetectorModule(BaseModule):
         """
         candidate_urls: List[str] = []
 
+        # ── 常见 CMS 登录页探测 ────────────────────────────────────
+        # 在进行外部工具发现之前，先探测常见的 CMS 登录页
+        cms_login_urls = self._detect_cms_login_pages(start_url)
+        if cms_login_urls:
+            print(f"\n  [Layer 0] 检测到 CMS 登录页: {cms_login_urls}")
+            candidate_urls.extend(cms_login_urls)
+
         if TOOL_DISCOVERY_ENABLED:
             discovered = self._tool_discovery.discover(start_url)
             candidate_urls.extend(discovered)
@@ -317,6 +324,54 @@ class LoginDetectorModule(BaseModule):
 
         print(f"\n  [批量筛选] 完成: {len(urls)} → {len(deduped)} 个候选 URL")
         return deduped
+
+    def _detect_cms_login_pages(self, start_url: str) -> List[str]:
+        """
+        探测常见 CMS 的登录页面。
+
+        通过访问常见的 CMS 管理路径，检测是否是 WordPress/Drupal/Joomla 等，
+        如果是，直接返回对应的登录页 URL。
+
+        Args:
+            start_url: 起始 URL
+
+        Returns:
+            检测到的 CMS 登录页 URL 列表
+        """
+        import urllib.parse
+
+        cms_login_urls = []
+        parsed = urllib.parse.urlparse(start_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # WordPress 探测
+        wp_admin_urls = [
+            f"{base_url}/wp-admin/",
+            f"{base_url}/wp-login.php",
+        ]
+
+        for wp_url in wp_admin_urls:
+            try:
+                resp = self.requester.get(wp_url, allow_redirects=True)
+                if resp:
+                    # 检查是否是 WordPress 登录页
+                    if 'wp-login' in resp.url or 'wp-admin' in resp.url:
+                        # 检查页面内容是否包含 WordPress 特征
+                        content = resp.text.lower()
+                        if 'wordpress' in content or 'wp-login' in content or 'wp-content' in content:
+                            login_url = f"{base_url}/wp-login.php"
+                            if login_url not in cms_login_urls:
+                                cms_login_urls.append(login_url)
+                            break
+            except Exception as e:
+                print(f"  [CMS 探测] WordPress 探测失败: {e}")
+                continue
+
+        # 如果检测到 WordPress，添加标准登录页
+        if cms_login_urls:
+            print(f"  [CMS 探测] ✅ 检测到 WordPress 站点")
+
+        return cms_login_urls
 
     def _batch_llm_filter(self, urls: List[str]) -> List[str]:
         """
