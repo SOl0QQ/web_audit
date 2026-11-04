@@ -324,11 +324,15 @@ def run_pipeline(target_url: str, step: str = "all"):
                 print("  [System] 递归爬虫也未能找到登录页，流水线终止。")
 
     finally:
-        # 保存性能报告
+        # 保存性能报告（按域名区分）
         try:
-            perf_monitor.save_report("/tmp/performance_report.json")
+            import urllib.parse
+            safe_domain = urllib.parse.urlparse(target_url).netloc.replace(".", "_")
+            perf_monitor.save_report(f"/tmp/performance_report_{safe_domain}.json")
+            # 重置监控数据，释放内存
+            perf_monitor.reset()
         except Exception as e:
-            print(f"\n[性能监控] 保存报告失败: {e}")
+            print(f"\n[性能监控] 保存/重置报告失败: {e}")
 
         requester.close()
         # 关闭 Playwright 浏览器池（如果使用了的话）
@@ -337,6 +341,31 @@ def run_pipeline(target_url: str, step: str = "all"):
             shutdown_browser()
         except ImportError:
             pass  # Playwright 未安装，忽略
+
+        # ── 资源清理：释放内存，避免长时间运行后累积 ──
+        try:
+            import gc
+            gc.collect()  # 强制垃圾回收
+            print(f"\n[System] ✅ 域名 {target_url} 扫描完毕，已清理资源")
+        except Exception as e:
+            print(f"\n[System] ⚠️ 资源清理失败: {e}")
+
+        # ── 卸载 Ollama 模型：释放 GPU 显存 ──
+        try:
+            from web_audit.config.settings import LLM_PROVIDER, LLM_MODEL, OLLAMA_BASE_URL
+            if LLM_PROVIDER == "ollama":
+                import requests as req
+                unload_resp = req.post(
+                    f"{OLLAMA_BASE_URL}/api/generate",
+                    json={"model": LLM_MODEL, "keep_alive": 0},
+                    timeout=30
+                )
+                if unload_resp.status_code == 200:
+                    print(f"[System] ✅ Ollama 模型 {LLM_MODEL} 已卸载，GPU 显存已释放")
+                else:
+                    print(f"[System] ⚠️ Ollama 模型卸载失败: status={unload_resp.status_code}")
+        except Exception as e:
+            print(f"[System] ⚠️ Ollama 模型卸载失败: {e}")
 
     # ── 生成报告 ───────────────────────────────────────────
     reporter.total_time = time.time() - pipeline_start_time
@@ -424,6 +453,19 @@ def main():
     def scan_task(url: str, index: int, total: int):
         try:
             print(f"\n>>> [{index}/{total}] [Thread-{threading.get_ident()}] 正在启动扫描任务: {url}")
+
+            # ── 健康检查：每扫描 3 个域名检查一次 Ollama 状态 ──
+            if index > 1 and (index - 1) % 3 == 0:
+                from web_audit.core.llm_factory import check_llm_health
+                if not check_llm_health():
+                    print(f"\n[System] ⚠️ LLM 服务端异常，等待 30 秒后重试...")
+                    import time
+                    time.sleep(30)
+                    # 再次检查
+                    if not check_llm_health():
+                        print(f"\n[System] ❌ LLM 服务端仍不可用，跳过当前目标: {url}")
+                        return
+
             run_pipeline(url, step=args.step)
         except Exception as e:
             print(f"\n[Error] 扫描目标 {url} 发生未捕获的严重异常，已强制跳过。错误详情: {e}")

@@ -145,6 +145,30 @@ class PerformanceMonitor:
 
         self._print_summary()
 
+    def reset(self):
+        """
+        重置监控数据，释放内存
+
+        在批量扫描多个域名时，每完成一个域名后调用此方法，
+        避免监控数据无限累积导致内存占用过高。
+        """
+        with self._lock:
+            # 保存当前统计摘要（可选）
+            summary = self._generate_summary()
+
+            # 重置所有指标
+            self.metrics = {
+                "llm_calls": [],
+                "http_requests": [],
+                "playwright_ops": [],
+                "module_times": [],
+            }
+            self.start_time = None
+            self.target_url = None
+
+        print(f"[性能监控] ✅ 已重置监控数据，释放内存")
+        return summary
+
     def _generate_summary(self) -> Dict[str, Any]:
         """生成摘要统计"""
         import statistics
