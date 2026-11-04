@@ -83,25 +83,22 @@ class BatchUrlFilterResult(BaseModel):
 BATCH_URL_FILTER_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """你是安全审计专家，从URL列表中识别登录页/后台入口。
 
-**likely_login_urls**（高概率登录页）：
+likely_login_urls（高概率登录页）：
 - 含 login, signin, sign-in, log-in, wp-login
-- 含 auth, oauth, sso（认证相关）
+- 含 auth, oauth, sso
 
-**possible_login_urls**（可能是后台入口）：
+possible_login_urls（可能是后台入口）：
 - 含 admin, manage, console, dashboard, backend
-- 含 portal, member, user（用户中心）
-- .php/.asp/.aspx/.jsp 且含 admin/login
+- 含 portal, member, user
+- .php/.asp 且含 admin/login
 
-**必须排除**：
-- 静态资源: .css, .js, .jpg, .png, .gif, .svg
-- 注册页: register, signup, join, create-account
-- 纯API: /api/, /ajax/, /rest/（不含admin）
+排除：静态资源(.css/.js/.jpg/.png)、注册页(register/signup)、纯API(/api/ /ajax/ 不含admin)
 
-原则：宁可多保留，不要漏掉。不确定就放possible。"""),
+原则：宁可多保留，不要漏掉。"""),
     ("human", """URL列表：
 {urls}
 
-返回JSON：{{"likely_login_urls": [...], "possible_login_urls": [...]}}""")
+请按结构化格式返回筛选结果。""")
 ])
 
 
@@ -273,48 +270,66 @@ class LoginDetectorModule(BaseModule):
 
     def batch_filter_urls(self, urls: List[str], batch_size: int = 10) -> List[str]:
         """
-        方案三：批量 LLM 判断 - 将多个 URL 打包发送给 LLM，快速筛选出可能是登录页的 URL。
+        批量 URL 筛选 - 使用关键词匹配快速过滤，避免 LLM 处理结构化文本时的延迟和错误。
 
-        优势：
-          - 之前：100 个 URL → 100 次 LLM 调用
-          - 之后：100 个 URL → 5 次 LLM 调用（每次 20 个）
+        对于 URL 这种结构化文本，关键词匹配比 LLM 更准确、更快。
+        后续还有 HTML 特征检测（密码框）和 LLM 单页验证来确保准确性。
 
         Args:
             urls: 候选 URL 列表
-            batch_size: 每批处理的 URL 数量
+            batch_size: 未使用（保留参数兼容性）
 
         Returns:
-            经过 LLM 筛选后的候选 URL 列表（likely + possible）
+            经过筛选后的候选 URL 列表
         """
         if not urls:
             return []
 
-        # 如果 URL 数量少于 batch_size，直接一批处理
-        if len(urls) <= batch_size:
-            return self._batch_llm_filter(urls)
+        # 关键词匹配规则
+        likely_keywords = ['login', 'signin', 'sign-in', 'log-in', 'wp-login', 'auth', 'oauth', 'sso']
+        possible_keywords = ['admin', 'manage', 'console', 'dashboard', 'backend', 'portal', 'member', 'user']
+        exclude_extensions = ['.css', '.js', '.jpg', '.jpeg', '.png', '.gif', '.svg', '.ico', '.woff', '.ttf']
+        exclude_keywords = ['register', 'signup', 'join', 'create-account', '/api/', '/ajax/', '/rest/']
 
-        # 分批处理
-        all_filtered: List[str] = []
-        total_batches = (len(urls) + batch_size - 1) // batch_size
+        likely: List[str] = []
+        possible: List[str] = []
+        excluded: List[str] = []
 
-        for i in range(0, len(urls), batch_size):
-            batch = urls[i:i + batch_size]
-            batch_num = i // batch_size + 1
-            print(f"\n  [批量筛选] 第 {batch_num}/{total_batches} 批 ({len(batch)} 个 URL)...")
+        for url in urls:
+            url_lower = url.lower()
 
-            filtered = self._batch_llm_filter(batch)
-            all_filtered.extend(filtered)
+            # 排除静态资源
+            if any(url_lower.endswith(ext) for ext in exclude_extensions):
+                excluded.append(url)
+                continue
 
-        # 去重
-        seen: set = set()
-        deduped: List[str] = []
-        for u in all_filtered:
-            if u not in seen:
-                seen.add(u)
-                deduped.append(u)
+            # 排除注册页和纯 API
+            if any(kw in url_lower for kw in exclude_keywords):
+                # 但如果包含 admin，仍然保留
+                if not any(kw in url_lower for kw in ['admin', 'manage']):
+                    excluded.append(url)
+                    continue
 
-        print(f"\n  [批量筛选] 完成: {len(urls)} → {len(deduped)} 个候选 URL")
-        return deduped
+            # 分类：高概率 vs 可能
+            if any(kw in url_lower for kw in likely_keywords):
+                likely.append(url)
+            elif any(kw in url_lower for kw in possible_keywords):
+                possible.append(url)
+            elif any(ext in url_lower for ext in ['.php', '.asp', '.aspx', '.jsp']) and \
+                 any(kw in url_lower for kw in ['admin', 'login']):
+                possible.append(url)
+            else:
+                # 不确定的也保留，宁可多不少
+                possible.append(url)
+
+        filtered = likely + possible
+
+        print(f"  [批量筛选] likely={len(likely)}, possible={len(possible)}, 排除={len(excluded)}")
+        if likely:
+            print(f"  [批量筛选] 高概率登录页: {likely[:5]}")
+        print(f"\n  [批量筛选] 完成: {len(urls)} → {len(filtered)} 个候选 URL")
+
+        return filtered
 
     def _detect_cms_login_pages(self, start_url: str) -> List[str]:
         """
