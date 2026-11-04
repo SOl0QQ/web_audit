@@ -76,41 +76,32 @@ class BatchUrlFilterResult(BaseModel):
         description="可能是登录页的 URL 列表（需要进一步验证）",
         default=[]
     )
-    reason: str = Field(
-        description="筛选理由",
-        default=""
-    )
+    # 优化：去掉 reason 字段，减少 LLM 生成文本量
 
 
 # ── 方案三：批量 LLM 判断 Prompt ─────────────────────────────────
 BATCH_URL_FILTER_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """你是一个网络安全专家，需要根据 URL 路径特征快速筛选出**可能是登录页或后台入口**的 URL。
+    ("system", """你是安全审计专家，从URL列表中识别登录页/后台入口。
 
-**判断标准（宽松模式，宁可多保留也不要漏掉）**：
+**likely_login_urls**（高概率登录页）：
+- 含 login, signin, sign-in, log-in, wp-login
+- 含 auth, oauth, sso（认证相关）
 
-**高概率是登录页/后台入口的特征（满足任一即可）**：
-- 路径包含: login, signin, sign-in, log-in, wp-login
-- 路径包含: admin, manage, console, dashboard, backend
-- 路径是后台目录: /admin/, /wp-admin/, /manage/, /console/
-- 路径以 .php, .asp, .aspx, .jsp 结尾且包含 admin/login 关键词
-- 路径包含: auth, oauth, sso, portal, member, user
+**possible_login_urls**（可能是后台入口）：
+- 含 admin, manage, console, dashboard, backend
+- 含 portal, member, user（用户中心）
+- .php/.asp/.aspx/.jsp 且含 admin/login
 
-**以下情况不是登录页（必须排除）**：
-- 路径明确是注册页: register, signup, regis, join, create-account
-- 路径明确是静态资源: .css, .js, .jpg, .png, .gif, .svg
-- 路径明确是 API 端点（不含 admin）: /api/, /ajax/, /rest/
+**必须排除**：
+- 静态资源: .css, .js, .jpg, .png, .gif, .svg
+- 注册页: register, signup, join, create-account
+- 纯API: /api/, /ajax/, /rest/（不含admin）
 
-**判断原则**：
-- likely_login_urls: 路径明确包含 login/signin/wp-login 的
-- possible_login_urls: 路径包含 admin/manage/console 等后台关键词的
-- 如果不确定，放入 possible_login_urls，后续会进一步验证
-
-请从给定的 URL 列表中筛选出**可能是登录页或后台入口**的 URL。"""),
-    ("human", """请分析以下 URL 列表，筛选出可能是登录页或后台入口的 URL：
-
+原则：宁可多保留，不要漏掉。不确定就放possible。"""),
+    ("human", """URL列表：
 {urls}
 
-请返回结构化的筛选结果。记住：宁可多保留，后续会进一步验证！""")
+返回JSON：{{"likely_login_urls": [...], "possible_login_urls": [...]}}""")
 ])
 
 
@@ -280,7 +271,7 @@ class LoginDetectorModule(BaseModule):
 
     # ── 方案三：批量 LLM URL 筛选 ─────────────────────────────────
 
-    def batch_filter_urls(self, urls: List[str], batch_size: int = 20) -> List[str]:
+    def batch_filter_urls(self, urls: List[str], batch_size: int = 10) -> List[str]:
         """
         方案三：批量 LLM 判断 - 将多个 URL 打包发送给 LLM，快速筛选出可能是登录页的 URL。
 

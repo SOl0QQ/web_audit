@@ -306,7 +306,7 @@ class UploadIdentifierModule(BaseModule):
                         js_text_blocks.append(f"// URL: {js_url}\n" + js_resp.text)
                 
                 combined_js = "\n\n".join(js_text_blocks)
-                
+
                 # 直接保留前 40000 字元 (約 10k tokens，完全在 Gemma 4 處理範圍內)
                 combined_js = combined_js[:40000]
                 
