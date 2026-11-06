@@ -296,6 +296,15 @@ def run_pipeline(target_url: str, step: str = "all"):
                 import traceback
                 traceback.print_exc()
             finally:
+                # 关闭本工作线程独占的 Playwright 浏览器，防止 Chromium 进程泄漏。
+                # shutdown_browser 是线程本地的，只会关闭当前线程的实例，
+                # 不影响其他工作线程各自持有的浏览器。
+                try:
+                    from web_audit.core.playwright_pool import shutdown_browser
+                    shutdown_browser()
+                except Exception:
+                    pass
+
                 from web_audit.config.settings import DEBUG_MODE
                 if is_valid_target or DEBUG_MODE:
                     thread_safe_logger.dump_buffer_to_screen(f"测试链报告: {candidate_url}")

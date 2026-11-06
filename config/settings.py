@@ -36,6 +36,10 @@ CRAWLER_MAX_CANDIDATE_LINKS = 15 # 每页最多候选链接数
 UPLOAD_MAX_DEPTH = 4             # 登录成功后，后台寻找上传点的最大深度
 UPLOAD_MAX_PAGES = 100           # 登录成功后，最多安全遍历的后台页面数量
 
+# ── Playwright 模擬渲染配置 ────────────────────────────────
+# 用于登录页识别阶段的页面渲染超时（秒）
+PLAYWRIGHT_RENDER_TIMEOUT = 15        # 单页渲染超时（秒），避免 networkidle 卡死
+
 # ── Playwright 模擬點擊爬蟲配置 ──────────────────────────────
 # 在 bypass 成功後，使用 Playwright 真實瀏覽器模擬點擊遍歷後台頁面，發現上傳點
 # 專為 SPA 框架（Vue/React/Angular）和重度 JS 渲染的後台系統設計

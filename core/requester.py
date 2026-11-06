@@ -17,6 +17,7 @@ from web_audit.config.settings import (
     REQUEST_TIMEOUT,
     REQUEST_VERIFY_SSL,
     REQUEST_HEADERS,
+    PLAYWRIGHT_RENDER_TIMEOUT,
 )
 from web_audit.core.performance_monitor import get_perf_monitor
 
@@ -55,6 +56,36 @@ class Requester:
         if extra_headers:
             self.session.headers.update(extra_headers)
 
+    @staticmethod
+    def _apply_encoding(resp: Response) -> None:
+        """
+        为响应推断并应用字符编码。
+
+        直接调用 resp.apparent_encoding 存在两个风险：
+          1. charset_normalizer/chardet 对部分响应（如某些压缩流、二进制）
+             可能抛出 LookupError，导致整个请求被当作失败。
+          2. 对大响应体会重新解码全部内容，性能开销大。
+        这里做防御性处理：优先使用 Content-Type 声明的编码，
+        其次尝试推断，最后回退到 UTF-8，确保任何情况下都不抛异常。
+        """
+        try:
+            # 1) 优先使用响应头中声明的编码（最可靠、零开销）
+            if resp.encoding:
+                return
+            # 2) 尝试内容推断；失败则回退 UTF-8
+            try:
+                inferred = resp.apparent_encoding
+                if inferred:
+                    resp.encoding = inferred
+                    return
+            except Exception:
+                pass
+            # 3) 最终回退
+            resp.encoding = "utf-8"
+        except Exception:
+            # 兜底：任何异常都不应让请求本身失败
+            resp.encoding = "utf-8"
+
     def get(self, url: str, **kwargs) -> Optional[Response]:
         """发送 GET 请求，返回 Response 或 None（出错时）。"""
         start = time.time()
@@ -63,7 +94,7 @@ class Requester:
                 url, timeout=self.timeout, verify=self.verify_ssl, **kwargs
             )
             duration = time.time() - start
-            resp.encoding = resp.apparent_encoding
+            self._apply_encoding(resp)
             get_perf_monitor().record_http(
                 method="GET",
                 url=url,
@@ -92,7 +123,7 @@ class Requester:
                 url, data=data, timeout=self.timeout, verify=self.verify_ssl, **kwargs
             )
             duration = time.time() - start
-            resp.encoding = resp.apparent_encoding
+            self._apply_encoding(resp)
             get_perf_monitor().record_http(
                 method="POST",
                 url=url,
@@ -190,11 +221,16 @@ class Requester:
 
                 page.route("**/*", disable_cache)
 
-                # networkidle: 网络连接数 < 2 持续 500ms，确保 JS 渲染完成
-                page.goto(url, wait_until="networkidle", timeout=self.timeout * 1000)
+                # 使用 domcontentloaded 策略，避免 networkidle 在持续请求的页面上卡死
+                # 等待 DOM 加载完成后，再额外等待 2 秒让 JS 渲染完成
+                print(f"[Requester] Playwright 开始渲染 (超时: {PLAYWRIGHT_RENDER_TIMEOUT}秒): {url}")
+                start_time = time.time()
+                page.goto(url, wait_until="domcontentloaded", timeout=PLAYWRIGHT_RENDER_TIMEOUT * 1000)
+                page.wait_for_timeout(2000)  # 额外等待2秒确保动态内容渲染
+                render_time = time.time() - start_time
 
                 html = page.content()
-                print(f"[Requester] Playwright 渲染成功 (携带 Session 状态，强力防缓存): {url}")
+                print(f"[Requester] ✅ Playwright 渲染成功 (耗时: {render_time:.2f}秒): {url}")
                 return html
             finally:
                 context.close()  # 只关闭上下文，不关闭浏览器
@@ -210,7 +246,7 @@ class Requester:
                     "Pragma": "no-cache"
                 }
             )
-            resp.encoding = resp.apparent_encoding
+            self._apply_encoding(resp)
             return resp.text if resp else None
 
     def fetch_network_resources(self, url: str) -> set:

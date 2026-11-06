@@ -92,7 +92,11 @@ class ThrottledLLMWrapper:
         # 获取信号量（如果已达上限则阻塞等待）
         acquired = _LLM_SEMAPHORE.acquire(timeout=LLM_TIMEOUT)
         if not acquired:
-            print(f"[LLM限流] ⚠️ 等待超时，强制继续...")
+            # 等待超时：放弃本次请求而不是强制继续。
+            # 强制继续会让请求继续堆积到 Ollama 服务端，进一步拖慢所有在途请求；
+            # 返回 None 后由调用方按“判定失败”路径安全跳过（main.py 的 confidence 门槛会丢弃该候选）。
+            print(f"[LLM限流] ❌ 等待 {LLM_TIMEOUT}s 超时，放弃本次请求（避免请求堆积）。")
+            return None
 
         try:
             return self._llm.invoke(*args, **kwargs)
@@ -101,10 +105,32 @@ class ThrottledLLMWrapper:
             _LLM_SEMAPHORE.release()
 
     def with_structured_output(self, schema, method=None):
-        """代理 with_structured_output 方法"""
+        """
+        代理 with_structured_output 方法。
+
+        关键：返回的 chain 必须经过限流。直接返回底层 LLM 的 chain
+        会绕过 _LLM_SEMAPHORE，导致并发请求堆积在 Ollama 服务端。
+        这里把限流包装在 chain.invoke 外层，无论以何种方式调用都生效。
+        """
         if method:
-            return self._llm.with_structured_output(schema, method=method)
-        return self._llm.with_structured_output(schema)
+            inner = self._llm.with_structured_output(schema, method=method)
+        else:
+            inner = self._llm.with_structured_output(schema)
+
+        def invoke_with_throttle(*args, **kwargs):
+            acquired = _LLM_SEMAPHORE.acquire(timeout=LLM_TIMEOUT)
+            if not acquired:
+                # 等待超时：抛出 TimeoutError 终止本次调用，而不是强制继续。
+                # 该异常会被 login_detector._llm_check_url 的 except 捕获并返回 None，
+                # 对应候选在 main.py 的判定失败分支被安全丢弃，不会堆积到 Ollama 服务端。
+                print(f"[LLM限流] ❌ 等待 {LLM_TIMEOUT}s 超时，放弃本次请求（避免请求堆积）。")
+                raise TimeoutError(f"LLM 请求排队等待超过 {LLM_TIMEOUT}s")
+            try:
+                return inner.invoke(*args, **kwargs)
+            finally:
+                _LLM_SEMAPHORE.release()
+
+        return RunnableLambda(invoke_with_throttle)
 
     def __getattr__(self, name):
         """代理其他所有方法到原始 LLM"""
