@@ -8,7 +8,7 @@ import threading
 from typing import Type, Any, Dict
 from pydantic import BaseModel
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.callbacks import BaseCallbackHandler
 from web_audit.config.settings import (
     LLM_PROVIDER,
