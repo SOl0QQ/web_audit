@@ -120,13 +120,15 @@ class ThrottledLLMWrapper:
         def invoke_with_throttle(*args, **kwargs):
             # 检查是否需要等待
             import time
-            if _LLM_SEMAPHORE._value == 0:
+            wait_start = time.time()
+            need_wait = _LLM_SEMAPHORE._value == 0
+
+            if need_wait:
                 print(f"[LLM限流] ⏳ LLM服务繁忙（当前并发: 2/2），排队等待...")
-                wait_start = time.time()
 
             acquired = _LLM_SEMAPHORE.acquire(timeout=LLM_TIMEOUT)
 
-            if _LLM_SEMAPHORE._value == 0:
+            if need_wait and acquired:
                 wait_time = time.time() - wait_start
                 if wait_time > 1:
                     print(f"[LLM限流] ✅ 排队等待 {wait_time:.1f}秒后获得执行权")
