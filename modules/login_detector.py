@@ -513,6 +513,10 @@ class LoginDetectorModule(BaseModule):
         # 在 SQL 注入测试阶段才执行，避免对每个候选 URL 都启动 Playwright。
 
         try:
+            print(f"  [LLM] 🤖 正在调用大模型分析页面特征（可能需要10-30秒）...")
+            import time
+            llm_start = time.time()
+
             result: LoginDetectorResult = self._chain.invoke({
                 "url": features["url"],
                 "title": features["title"],
@@ -521,10 +525,12 @@ class LoginDetectorModule(BaseModule):
                 "snippet": features["snippet"],
             })
 
+            llm_elapsed = time.time() - llm_start
             icon = "✅" if (result.is_login_page and result.confidence > 0.8) else \
                    "🟡" if result.is_login_page else "❌"
             print(f"  [LLM] {icon} 登录页={result.is_login_page} "
-                  f"置信度={result.confidence:.2f} | {result.reason[:60]}")
+                  f"置信度={result.confidence:.2f} (耗时: {llm_elapsed:.1f}秒)")
+            print(f"  [LLM] 推理: {result.reason[:100]}")
 
             return result
 

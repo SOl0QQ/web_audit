@@ -271,12 +271,29 @@ def run_pipeline(target_url: str, step: str = "all"):
                 print(f"\n[{idx}/{total}] ⚡ 监测到已有登录页 Bypass 成功，取消对 {candidate_url} 的测试。")
                 return
 
+            # 实时输出进度（绕过缓冲）
+            import sys
+            original_stdout = thread_safe_logger.original_stdout
+            original_stdout.write(f"\n[{idx}/{total}] 🔍 开始验证: {candidate_url}\n")
+            original_stdout.flush()
+
             thread_safe_logger.start_buffer()
             is_valid_target = False
             try:
                 if step in ["all", "login"]:
                     print(f"\n[{idx}/{total}] 正在使用 LLM 验证候选 URL: {candidate_url}")
+                    import time
+                    llm_start = time.time()
                     llm_result = login_module._llm_check_url(candidate_url)
+                    llm_time = time.time() - llm_start
+
+                    # 实时输出LLM验证结果
+                    original_stdout.write(f"[{idx}/{total}] ⏱️  LLM验证耗时: {llm_time:.1f}秒 ")
+                    if llm_result and llm_result.is_login_page and llm_result.confidence >= 0.9:
+                        original_stdout.write(f"✅ 确认登录页 (置信度: {llm_result.confidence:.2f})\n")
+                    else:
+                        original_stdout.write(f"❌ 非登录页 (置信度: {llm_result.confidence if llm_result else 'N/A'})\n")
+                    original_stdout.flush()
                     if global_bypass_event.is_set():
                         print(f"  [系统拦截] 已有其他页面 Bypass 成功，提前退出当前任务。")
                         return
@@ -285,6 +302,10 @@ def run_pipeline(target_url: str, step: str = "all"):
                         print(f"  [判定失败] 不是登录页 (confidence={llm_result.confidence if llm_result else 'N/A'}), 丢弃。")
                         return
                     print(f"  [✅ 确认登录页] 开始为 {candidate_url} 执行深层攻击链!")
+
+                    # 实时输出攻击链开始信息
+                    original_stdout.write(f"[{idx}/{total}] 🎯 开始攻击链测试...\n")
+                    original_stdout.flush()
 
                 is_valid_target = True
                 with login_found_lock:
@@ -314,12 +335,24 @@ def run_pipeline(target_url: str, step: str = "all"):
 
         if candidates:
             print(f"\n[主控] 准备对 {len(candidates)} 个候选 URL 启动流式并发验证...")
+            print(f"[主控] 并发线程数: 5, LLM并发限制: 2 (其他线程会排队等待)")
+            print(f"[主控] 候选URL列表:")
+            for i, c in enumerate(candidates, 1):
+                print(f"  [{i}/{len(candidates)}] {c}")
+            print(f"\n{'─' * 70}")
+            print(f"开始并发验证 (实时进度如下)")
+            print(f"{'─' * 70}\n")
+
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as inner_executor:
                 futures = []
                 for i, c in enumerate(candidates, 1):
                     futures.append(inner_executor.submit(verify_and_attack, c, i, len(candidates)))
                 concurrent.futures.wait(futures)
+
+            print(f"\n{'─' * 70}")
+            print(f"并发验证完成！")
+            print(f"{'─' * 70}\n")
 
         # 降级备选：如果没有任何候选通过验证，或外部工具根本没发现候选，且尚未 Bypass 成功，启动递归爬虫
         if step in ["all", "login"] and not valid_login_found and not global_bypass_event.is_set():
